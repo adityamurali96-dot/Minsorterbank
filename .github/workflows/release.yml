@@ -1,0 +1,96 @@
+name: Build release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x64
+            artifact: Minsorterbank-windows-x64.zip
+          - os: macos-13          # Intel
+            label: macos-intel
+            artifact: Minsorterbank-macos-intel.dmg
+          - os: macos-14          # Apple Silicon
+            label: macos-arm64
+            artifact: Minsorterbank-macos-arm64.dmg
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.10.0
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: pyinstaller --clean -y Minsorterbank.spec
+
+      # ---------- Windows packaging ----------
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/Minsorterbank/* -DestinationPath dist/${{ matrix.artifact }}
+
+      # ---------- macOS packaging ----------
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # PyInstaller produces dist/Minsorterbank.app for the BUNDLE target.
+          # Wrap it in a simple DMG (drag-to-Applications).
+          mkdir -p dmg_staging
+          cp -R dist/Minsorterbank.app dmg_staging/
+          ln -s /Applications dmg_staging/Applications
+          hdiutil create -volname "Minsorterbank" \
+                         -srcfolder dmg_staging \
+                         -ov -format UDZO \
+                         "dist/${{ matrix.artifact }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
