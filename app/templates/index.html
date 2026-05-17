@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Minsorterbank — sort a bank statement</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Minsorterbank</h1>
+      <p class="sub">Group an Indian bank statement by counterparty.
+        Supports ICICI, Axis, HDFC, SBI &mdash; or any tabular Excel/CSV.</p>
+    </header>
+
+    <section id="drop" class="drop" tabindex="0">
+      <input type="file" id="file" hidden
+             accept=".xls,.xlsx,.csv,.txt,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+      <div class="drop-inner">
+        <div class="icon">&#x2191;</div>
+        <p class="primary"><strong>Drop a statement file here</strong></p>
+        <p class="secondary">or <button id="browse" type="button">choose a file</button></p>
+        <p class="hint">.xls &middot; .xlsx &middot; .csv &middot; .txt</p>
+      </div>
+    </section>
+
+    <section id="status" class="status hidden">
+      <div class="spinner"></div>
+      <p id="statusText">Processing&hellip;</p>
+    </section>
+
+    <section id="result" class="result hidden">
+      <h2>Done</h2>
+      <dl>
+        <dt>Detected bank</dt><dd id="bank">&mdash;</dd>
+        <dt>Transactions parsed</dt><dd id="rows">&mdash;</dd>
+        <dt>Counterparties extracted</dt><dd id="extracted">&mdash;</dd>
+      </dl>
+      <a id="download" class="btn" download>Download sorted workbook</a>
+      <button id="again" type="button" class="link">Sort another file</button>
+    </section>
+
+    <section id="error" class="error hidden">
+      <h2>Something went wrong</h2>
+      <pre id="errorText"></pre>
+      <button id="errorAgain" type="button" class="link">Try again</button>
+    </section>
+
+    <footer>
+      <p>Files are processed locally on your machine. Nothing is uploaded.</p>
+    </footer>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
