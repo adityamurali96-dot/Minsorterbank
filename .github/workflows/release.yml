@@ -20,9 +20,6 @@ jobs:
           - os: windows-latest
             label: windows-x64
             artifact: Minsorterbank-windows-x64.zip
-          - os: macos-13          # Intel
-            label: macos-intel
-            artifact: Minsorterbank-macos-intel.dmg
           - os: macos-14          # Apple Silicon
             label: macos-arm64
             artifact: Minsorterbank-macos-arm64.dmg
