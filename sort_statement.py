@@ -226,9 +226,10 @@ class Profile:
 
 
 def _load_raw(path: Path):
-    """Return (raw_text_first_8k, raw_df_or_None). Used for detection.
+    """Return (raw_text_first_8k, raw_df_or_None). Used for detection and parsing.
 
-    Reads the file as text and (if BIFF) as a dataframe. Doesn't fail on either side."""
+    Tries (in order): xlrd (.xls BIFF), openpyxl (.xlsx), pd.read_html
+    (many bank exports are HTML wrapped in a .xls extension)."""
     raw_text = ""
     try:
         with open(path, "rb") as f:
@@ -236,14 +237,115 @@ def _load_raw(path: Path):
     except Exception:
         pass
     raw_df = None
-    try:
-        raw_df = pd.read_excel(path, sheet_name=0, engine="xlrd", header=None)
-    except Exception:
+    for engine in ("xlrd", "openpyxl"):
         try:
-            raw_df = pd.read_excel(path, sheet_name=0, engine="openpyxl", header=None)
+            raw_df = pd.read_excel(path, sheet_name=0, engine=engine, header=None)
+            break
+        except Exception:
+            continue
+    if raw_df is None:
+        try:
+            tables = pd.read_html(str(path), header=None)
+            if tables:
+                raw_df = max(tables, key=lambda t: t.shape[0]).reset_index(drop=True)
+                raw_df.columns = range(raw_df.shape[1])
         except Exception:
             pass
     return raw_text, raw_df
+
+
+# ============================================================
+# Shared header-driven row parser
+# ============================================================
+
+_DATE_TOKENS = ("txn date", "tran date", "transaction date", "value date", "date")
+_REMARKS_TOKENS = ("transaction remarks", "narration", "particulars",
+                   "description", "remarks")
+_DEBIT_TOKENS = ("withdrawal amt", "withdrawal", "debit amt", "debit", "dr")
+_CREDIT_TOKENS = ("deposit amt", "deposit", "credit amt", "credit", "cr")
+_BALANCE_TOKENS = ("closing balance", "balance", "bal")
+
+
+def _header_match(needle: str, cell: str) -> bool:
+    """Word-boundary needle match. Prevents 'cr' from hitting 'description'."""
+    if not cell:
+        return False
+    return re.search(rf"\b{re.escape(needle)}", cell) is not None
+
+
+def _find_header_row_any(df: pd.DataFrame) -> Optional[int]:
+    """Find the row that looks like a transaction header (date + remarks + amount)."""
+    for i in range(min(60, len(df))):
+        row_lc = [str(v).lower().strip() for v in df.iloc[i].tolist()]
+        has_date = any(any(_header_match(t, v) for t in _DATE_TOKENS) for v in row_lc)
+        has_rem = any(any(_header_match(t, v) for t in _REMARKS_TOKENS) for v in row_lc)
+        has_amt = any(any(_header_match(t, v) for t in _DEBIT_TOKENS + _CREDIT_TOKENS)
+                      for v in row_lc)
+        if has_date and has_rem and has_amt:
+            return i
+    return None
+
+
+def _pick_col(header: list[str], needles: tuple[str, ...],
+              avoid: Optional[set[int]] = None) -> Optional[int]:
+    """Return the column index whose lowercase header matches one of the needles.
+
+    Iterates needles outer-loop first so the most specific token (e.g. 'txn date')
+    wins over a less specific one (e.g. 'date' matching 'Value Date')."""
+    avoid = avoid or set()
+    for n in needles:
+        for idx, h in enumerate(header):
+            if idx in avoid:
+                continue
+            if _header_match(n, h):
+                return idx
+    return None
+
+
+def _parse_from_df(raw: pd.DataFrame, extract_fn) -> pd.DataFrame:
+    """Parse a transaction DataFrame by locating columns from header text.
+
+    Used by every bank profile so detection format (xls / xlsx / html) doesn't
+    matter — we only care about header names."""
+    hdr = _find_header_row_any(raw)
+    if hdr is None:
+        raise RuntimeError("Couldn't locate transaction header row")
+    header = [str(v).lower().strip() for v in raw.iloc[hdr].tolist()]
+
+    col_date = _pick_col(header, _DATE_TOKENS)
+    col_rem = _pick_col(header, _REMARKS_TOKENS)
+    col_wd = _pick_col(header, _DEBIT_TOKENS)
+    # Don't let deposit column collide with the debit column
+    col_dep = _pick_col(header, _CREDIT_TOKENS, avoid={col_wd} if col_wd is not None else None)
+    col_bal = _pick_col(header, _BALANCE_TOKENS)
+
+    df = raw.iloc[hdr + 1:].copy().reset_index(drop=True)
+
+    def col(i):
+        return df.iloc[:, i] if i is not None else pd.Series([None] * len(df))
+
+    def numify(series):
+        # Strip currency symbols / commas / quotes before to_numeric
+        cleaned = series.astype(str).str.replace(",", "", regex=False) \
+            .str.replace("₹", "", regex=False).str.strip().str.strip('"').str.strip()
+        return pd.to_numeric(cleaned, errors="coerce").fillna(0)
+
+    out = pd.DataFrame({
+        "txn_date": col(col_date),
+        "remarks": col(col_rem),
+        "withdrawal": numify(col(col_wd)),
+        "deposit": numify(col(col_dep)),
+        "balance": pd.to_numeric(
+            col(col_bal).astype(str).str.replace(",", "", regex=False).str.strip(),
+            errors="coerce",
+        ),
+    })
+    out = out.dropna(subset=["remarks"])
+    # Drop separator rows (asterisks, header repeats, etc.)
+    out = out[~out["remarks"].astype(str).str.match(r"^\s*[\*\-=_]{3,}\s*$")]
+    out = out[(out["withdrawal"] > 0) | (out["deposit"] > 0)].reset_index(drop=True)
+    out["counterparty"] = out["remarks"].map(extract_fn)
+    return out
 
 
 def _find_header_row(df: pd.DataFrame, *needles: str) -> Optional[int]:
@@ -263,29 +365,20 @@ class ICICIProfile(Profile):
 
     @classmethod
     def detect(cls, path, raw_text, raw_df):
+        text_up = raw_text.upper()
+        if "ICICI" in text_up and "TRANSACTION REMARKS" in text_up:
+            return True
         if raw_df is None:
             return False
-        # ICICI .xls has 'Transaction Remarks' header AND 'ICICI' somewhere up top
         hdr = _find_header_row(raw_df, "transaction remarks")
-        if hdr is None:
-            return False
-        head_text = " ".join(str(v).lower() for v in raw_df.iloc[:hdr].values.flatten() if v == v)
-        return "icici" in head_text or "icicibank" in head_text or hdr is not None  # ICICI is the default 'transaction remarks' format
+        return hdr is not None
 
     @classmethod
     def parse(cls, path):
-        raw = pd.read_excel(path, sheet_name=0, engine="xlrd", header=None)
-        hdr = _find_header_row(raw, "transaction remarks")
-        df = raw.iloc[hdr + 1:].copy()
-        df.columns = ["_pad", "sno", "value_date", "txn_date", "cheque",
-                      "remarks", "withdrawal", "deposit", "balance"]
-        df = df.dropna(subset=["remarks"]).reset_index(drop=True)
-        df["withdrawal"] = pd.to_numeric(df["withdrawal"], errors="coerce").fillna(0)
-        df["deposit"] = pd.to_numeric(df["deposit"], errors="coerce").fillna(0)
-        df["balance"] = pd.to_numeric(df["balance"], errors="coerce")
-        df = df[(df["withdrawal"] > 0) | (df["deposit"] > 0)].reset_index(drop=True)
-        df["counterparty"] = df["remarks"].map(cls.extract)
-        return df[["txn_date", "remarks", "withdrawal", "deposit", "balance", "counterparty"]]
+        _, raw = _load_raw(path)
+        if raw is None:
+            raise RuntimeError("ICICI: couldn't load file as a table")
+        return _parse_from_df(raw, cls.extract)
 
     @classmethod
     def extract(cls, remarks):
@@ -423,29 +516,23 @@ class AxisProfile(Profile):
 
     @classmethod
     def detect(cls, path, raw_text, raw_df):
+        text_up = raw_text.upper()
+        if "PARTICULARS" in text_up and ("UTIB" in text_up or "AXIS BANK" in text_up):
+            return True
         if raw_df is None:
             return False
         hdr = _find_header_row(raw_df, "particulars")
         if hdr is None:
             return False
-        # Axis distinctive: 'PARTICULARS' header AND 'SOL' column AND 'IFSC' in metadata mentions UTIB
         head_text = " ".join(str(v) for v in raw_df.iloc[:hdr].values.flatten() if v == v)
         return "UTIB" in head_text or "AXIS" in head_text.upper()
 
     @classmethod
     def parse(cls, path):
-        raw = pd.read_excel(path, sheet_name=0, engine="xlrd", header=None)
-        hdr = _find_header_row(raw, "particulars")
-        # Axis cols (from sample): SRL NO, Tran Date, CHQNO, PARTICULARS, DR, CR, BAL, SOL
-        df = raw.iloc[hdr + 1:].copy()
-        df.columns = ["sno", "txn_date", "cheque", "remarks", "withdrawal", "deposit", "balance", "sol"]
-        df = df.dropna(subset=["remarks"]).reset_index(drop=True)
-        df["withdrawal"] = pd.to_numeric(df["withdrawal"], errors="coerce").fillna(0)
-        df["deposit"] = pd.to_numeric(df["deposit"], errors="coerce").fillna(0)
-        df["balance"] = pd.to_numeric(df["balance"], errors="coerce")
-        df = df[(df["withdrawal"] > 0) | (df["deposit"] > 0)].reset_index(drop=True)
-        df["counterparty"] = df["remarks"].map(cls.extract)
-        return df[["txn_date", "remarks", "withdrawal", "deposit", "balance", "counterparty"]]
+        _, raw = _load_raw(path)
+        if raw is None:
+            raise RuntimeError("Axis: couldn't load file as a table")
+        return _parse_from_df(raw, cls.extract)
 
     @classmethod
     def extract(cls, remarks):
@@ -493,9 +580,12 @@ class HDFCProfile(Profile):
 
     @classmethod
     def detect(cls, path, raw_text, raw_df):
+        text_up = raw_text.upper()
+        # Text-based detection (works for HTML-format .xls files where raw_df is None)
+        if "HDFC" in text_up and "NARRATION" in text_up:
+            return True
         if raw_df is None:
             return False
-        # HDFC: 'Narration' header AND 'HDFC' in metadata
         hdr = _find_header_row(raw_df, "narration")
         if hdr is None:
             return False
@@ -504,21 +594,10 @@ class HDFCProfile(Profile):
 
     @classmethod
     def parse(cls, path):
-        raw = pd.read_excel(path, sheet_name=0, engine="xlrd", header=None)
-        hdr = _find_header_row(raw, "narration")
-        # HDFC cols: Date, Narration, Chq./Ref.No., Value Dt, Withdrawal Amt., Deposit Amt., Closing Balance, Remarks
-        df = raw.iloc[hdr + 2:].copy()  # +2 because HDFC has a separator row of asterisks
-        df.columns = ["txn_date", "remarks", "chq_ref", "value_dt",
-                      "withdrawal", "deposit", "balance", "extra_remarks"]
-        df = df.dropna(subset=["remarks"]).reset_index(drop=True)
-        # Drop the row of asterisks and any header-style rows
-        df = df[~df["remarks"].astype(str).str.startswith("*")].reset_index(drop=True)
-        df["withdrawal"] = pd.to_numeric(df["withdrawal"], errors="coerce").fillna(0)
-        df["deposit"] = pd.to_numeric(df["deposit"], errors="coerce").fillna(0)
-        df["balance"] = pd.to_numeric(df["balance"], errors="coerce")
-        df = df[(df["withdrawal"] > 0) | (df["deposit"] > 0)].reset_index(drop=True)
-        df["counterparty"] = df["remarks"].map(cls.extract)
-        return df[["txn_date", "remarks", "withdrawal", "deposit", "balance", "counterparty"]]
+        _, raw = _load_raw(path)
+        if raw is None:
+            raise RuntimeError("HDFC: couldn't load file as a table")
+        return _parse_from_df(raw, cls.extract)
 
     @classmethod
     def extract(cls, remarks):
@@ -613,14 +692,28 @@ class SBIProfile(Profile):
 
     @classmethod
     def detect(cls, path, raw_text, raw_df):
-        # SBI: tab-separated text file with 'Account Name' in first line
-        return "Account Name" in raw_text and "IFS (Indian Financial System)" in raw_text
+        text_up = raw_text.upper()
+        if "STATE BANK OF INDIA" in text_up:
+            return True
+        # Tab-separated text export — be lenient about the IFSC label variant
+        if "ACCOUNT NAME" in text_up and ("IFS CODE" in text_up
+                                          or "IFSC" in text_up
+                                          or "IFS (INDIAN FINANCIAL SYSTEM)" in text_up
+                                          or "SBIN0" in text_up):
+            return True
+        return False
 
     @classmethod
     def parse(cls, path):
+        # If the file loads as a table (HTML-wrapped .xls or real .xls/.xlsx),
+        # use the shared header-driven parser.
+        _, raw_df = _load_raw(path)
+        if raw_df is not None and _find_header_row_any(raw_df) is not None:
+            return _parse_from_df(raw_df, cls.extract)
+
+        # Otherwise fall back to the tab-separated text export.
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
-        # Find the header line containing 'Txn Date' and 'Description'
         lines = text.split("\n")
         hdr_idx = None
         for i, ln in enumerate(lines):
@@ -631,31 +724,59 @@ class SBIProfile(Profile):
         if hdr_idx is None:
             raise RuntimeError("SBI: couldn't locate transaction header line")
 
-        # SBI cols: Txn Date, Value Date, Description, Ref No./Cheque No., Debit, Credit, Balance
-        rows = []
-        for ln in lines[hdr_idx + 1:]:
-            if not ln.strip():
-                continue
-            fields = ln.split("\t")
-            if len(fields) < 7:
-                continue
-            rows.append(fields[:7])
+        header_fields = [h.strip().lower() for h in lines[hdr_idx].split("\t")]
 
-        df = pd.DataFrame(rows, columns=["txn_date", "value_date", "remarks",
-                                          "chq_ref", "withdrawal", "deposit", "balance"])
+        def find_col(*needles):
+            for n in needles:
+                for idx, h in enumerate(header_fields):
+                    if _header_match(n, h):
+                        return idx
+            return None
+
+        col_date = find_col(*_DATE_TOKENS)
+        col_rem = find_col(*_REMARKS_TOKENS)
+        col_wd = find_col(*_DEBIT_TOKENS)
+        avoid = {col_wd} if col_wd is not None else set()
+        col_dep = None
+        for n in _CREDIT_TOKENS:
+            for idx, h in enumerate(header_fields):
+                if idx in avoid:
+                    continue
+                if _header_match(n, h):
+                    col_dep = idx
+                    break
+            if col_dep is not None:
+                break
+        col_bal = find_col(*_BALANCE_TOKENS)
 
         def _to_num(s):
             s = str(s).strip().strip('"').replace(",", "").strip()
-            if not s or s == "nan":
+            if not s or s.lower() == "nan":
                 return 0.0
             try:
                 return float(s)
             except ValueError:
                 return 0.0
 
-        df["withdrawal"] = df["withdrawal"].map(_to_num)
-        df["deposit"] = df["deposit"].map(_to_num)
-        df["balance"] = df["balance"].map(_to_num)
+        rows = []
+        for ln in lines[hdr_idx + 1:]:
+            if not ln.strip():
+                continue
+            fields = ln.split("\t")
+            if len(fields) <= max(c for c in (col_date, col_rem, col_wd, col_dep) if c is not None):
+                continue
+            rows.append(fields)
+
+        def get(fields, i):
+            return fields[i] if (i is not None and i < len(fields)) else ""
+
+        df = pd.DataFrame({
+            "txn_date": [get(r, col_date) for r in rows],
+            "remarks": [get(r, col_rem) for r in rows],
+            "withdrawal": [_to_num(get(r, col_wd)) for r in rows],
+            "deposit": [_to_num(get(r, col_dep)) for r in rows],
+            "balance": [_to_num(get(r, col_bal)) for r in rows],
+        })
         df = df[(df["withdrawal"] > 0) | (df["deposit"] > 0)].reset_index(drop=True)
         df["counterparty"] = df["remarks"].map(cls.extract)
         return df[["txn_date", "remarks", "withdrawal", "deposit", "balance", "counterparty"]]
@@ -733,126 +854,21 @@ class GenericProfile(Profile):
 
     @classmethod
     def parse(cls, path):
-        # Best-effort column detection for unknown formats.
-        raw = None
-        for engine in ("xlrd", "openpyxl"):
-            try:
-                raw = pd.read_excel(path, sheet_name=0, engine=engine, header=None)
-                break
-            except Exception:
-                continue
-        if raw is None:
-            # Try as tab-separated text
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                text = f.read()
-            return _parse_generic_text(text)
-
-        return _parse_generic_df(raw)
+        _, raw = _load_raw(path)
+        if raw is not None:
+            return _parse_from_df(raw, cls.extract)
+        # File didn't load as Excel/HTML — try tab/comma-separated text.
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        sep = "\t" if text.count("\t") > text.count(",") else ","
+        rows = list(csv.reader(io.StringIO(text), delimiter=sep))
+        df = pd.DataFrame(rows)
+        return _parse_from_df(df, cls.extract)
 
     @classmethod
     def extract(cls, remarks):
         n = extract_generic(remarks)
         return _apply_alias(n) if n else None
-
-
-def _parse_generic_df(raw: pd.DataFrame) -> pd.DataFrame:
-    # Find header row by looking for date- and amount-like words.
-    DATE_TOKENS = ("date", "txn date", "tran date", "transaction date")
-    AMT_DEBIT = ("withdrawal", "debit", "dr", "withdrawal amt")
-    AMT_CREDIT = ("deposit", "credit", "cr", "deposit amt")
-    REMARKS = ("remarks", "narration", "particulars", "description", "transaction remarks")
-
-    hdr = None
-    for i in range(min(50, len(raw))):
-        row_lc = [str(v).lower().strip() for v in raw.iloc[i].tolist()]
-        has_date = any(any(t in v for t in DATE_TOKENS) for v in row_lc)
-        has_remarks = any(any(t in v for t in REMARKS) for v in row_lc)
-        has_amt = any(any(t in v for t in AMT_DEBIT + AMT_CREDIT) for v in row_lc)
-        if has_date and has_remarks and has_amt:
-            hdr = i
-            break
-    if hdr is None:
-        raise RuntimeError("Generic parser: couldn't find header row")
-
-    header = [str(v).lower().strip() for v in raw.iloc[hdr].tolist()]
-
-    def find_col(*needles):
-        for idx, h in enumerate(header):
-            for n in needles:
-                if n in h:
-                    return idx
-        return None
-
-    col_date = find_col(*DATE_TOKENS)
-    col_rem = find_col(*REMARKS)
-    col_wd = find_col(*AMT_DEBIT)
-    col_dep = find_col(*AMT_CREDIT)
-    col_bal = find_col("balance", "bal")
-
-    df = raw.iloc[hdr + 1:].copy().reset_index(drop=True)
-
-    def col(i):
-        return df.iloc[:, i] if i is not None else pd.Series([None] * len(df))
-
-    out = pd.DataFrame({
-        "txn_date": col(col_date),
-        "remarks": col(col_rem),
-        "withdrawal": pd.to_numeric(col(col_wd), errors="coerce").fillna(0),
-        "deposit": pd.to_numeric(col(col_dep), errors="coerce").fillna(0),
-        "balance": pd.to_numeric(col(col_bal), errors="coerce"),
-    })
-    out = out.dropna(subset=["remarks"])
-    out = out[(out["withdrawal"] > 0) | (out["deposit"] > 0)].reset_index(drop=True)
-    out["counterparty"] = out["remarks"].map(lambda r: _apply_alias(extract_generic(r)) if extract_generic(r) else None)
-    return out
-
-
-def _parse_generic_text(text: str) -> pd.DataFrame:
-    # Tab- or comma-separated; sniff which.
-    sep = "\t" if text.count("\t") > text.count(",") else ","
-    rows = list(csv.reader(io.StringIO(text), delimiter=sep))
-    # Find header row
-    hdr = None
-    for i, row in enumerate(rows):
-        joined = " | ".join(c.lower() for c in row)
-        if any(d in joined for d in ("date",)) and any(r in joined for r in ("remarks", "narration", "particulars", "description")) and any(a in joined for a in ("debit", "credit", "withdrawal", "deposit")):
-            hdr = i
-            break
-    if hdr is None:
-        raise RuntimeError("Generic text parser: couldn't find header row")
-    df = pd.DataFrame(rows[hdr + 1:], columns=[c.strip().lower() for c in rows[hdr]])
-
-    def pick(*needles):
-        for c in df.columns:
-            for n in needles:
-                if n in c:
-                    return c
-        return None
-
-    c_date = pick("txn date", "tran date", "date")
-    c_rem = pick("description", "narration", "particulars", "remarks")
-    c_wd = pick("debit", "withdrawal", "dr")
-    c_dep = pick("credit", "deposit", "cr")
-    c_bal = pick("balance")
-
-    def numify(s):
-        s = str(s).strip().strip('"').replace(",", "")
-        try:
-            return float(s)
-        except (ValueError, TypeError):
-            return 0.0
-
-    out = pd.DataFrame({
-        "txn_date": df[c_date] if c_date else "",
-        "remarks": df[c_rem] if c_rem else "",
-        "withdrawal": df[c_wd].map(numify) if c_wd else 0,
-        "deposit": df[c_dep].map(numify) if c_dep else 0,
-        "balance": df[c_bal].map(numify) if c_bal else 0,
-    })
-    out = out.dropna(subset=["remarks"])
-    out = out[(out["withdrawal"] > 0) | (out["deposit"] > 0)].reset_index(drop=True)
-    out["counterparty"] = out["remarks"].map(lambda r: _apply_alias(extract_generic(r)) if extract_generic(r) else None)
-    return out
 
 
 # Order matters: more-specific profiles first; Generic always last.
