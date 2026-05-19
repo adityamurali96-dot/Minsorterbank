@@ -3,58 +3,67 @@
 Turn an Indian bank statement (ICICI / Axis / HDFC / SBI / generic Excel / CSV)
 into a grouped Deposits / Withdrawals workbook.
 
-## Use it
+Runs entirely on your computer &mdash; nothing is uploaded anywhere.
 
-### Desktop app (recommended for everyday users)
+## Download &amp; run (everyday users)
 
-Grab the latest installer for your OS from
-[Releases](../../releases/latest):
+### Step 1 &mdash; Download
 
-- **Windows** &mdash; `Minsorterbank-windows-x64.exe` &rarr; double-click to
-  run. It&rsquo;s a single self-contained executable; nothing to install.
-- **macOS (Apple Silicon &mdash; M1/M2/M3/M4)** &mdash;
-  `Minsorterbank-macos-arm64.dmg` &rarr; open &rarr; drag the
-  `Minsorterbank` app into Applications &rarr; launch.
+1. Go to the top of this page: <https://github.com/adityamurali96-dot/Minsorterbank>
+2. Click the green **&lt;&gt; Code** button.
+3. In the dropdown, click **Download ZIP**.
+4. A file called `Minsorterbank-main.zip` will land in your Downloads folder.
 
-The app launches a small local web UI in your browser, processes the file
-entirely on your machine, and gives you back the sorted `.xlsx`. Nothing is
-uploaded anywhere.
+### Step 2 &mdash; Extract
 
-> First-launch note on macOS: because the build isn&rsquo;t signed with an
-> Apple Developer ID, macOS will say &ldquo;Apple could not verify
-> Minsorterbank&rdquo;. Right-click the app &rarr; **Open** &rarr;
-> **Open** to bypass that once.
+- **Windows:** right-click the zip &rarr; **Extract All&hellip;** &rarr; pick a
+  spot like your Desktop &rarr; **Extract**.
+- **macOS:** double-click the zip. Finder will create a `Minsorterbank-main`
+  folder next to it.
 
-### CLI
+### Step 3 &mdash; Double-click the launcher
+
+Open the extracted folder and double-click the launcher for your computer:
+
+- **Windows** &rarr; `Start-Minsorterbank.bat`
+- **macOS** &rarr; `Start-Minsorterbank.command`
+
+A small Terminal / Command Prompt window will appear (leave it open) and
+your browser will open the Minsorterbank page at a local address like
+`http://127.0.0.1:54321`. Upload your bank statement, download the sorted
+spreadsheet.
+
+When you&rsquo;re done, close the Terminal / Command Prompt window to quit.
+
+### First-launch notes
+
+**Windows &mdash; if Python isn&rsquo;t installed yet:** the launcher will
+open the Python download page in your browser. Click the big yellow
+**Download Python** button, run the installer, and on the **first installer
+screen tick &ldquo;Add python.exe to PATH&rdquo;** before clicking Install.
+Then double-click `Start-Minsorterbank.bat` again.
+
+**macOS &mdash; first-time Gatekeeper prompt:** macOS may say &ldquo;Apple
+cannot check it for malicious software.&rdquo; Right-click
+`Start-Minsorterbank.command` &rarr; **Open** &rarr; **Open**. After that
+once, regular double-click works forever. If Python 3 isn&rsquo;t installed
+yet, the launcher will pop up a dialog and open the Python download page;
+install it, then double-click the file again.
+
+The first run also installs the required Python libraries into a private
+`.venv` folder next to the launcher (about 30 seconds, one-time). Every
+run after that is instant.
+
+## Use it from the command line
 
 ```bash
 python sort_statement.py path/to/statement.xls
 ```
 
-### Run the web UI from source
+## Run the web UI from source
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python app/app.py
-```
-
-## Build installers locally
-
-```bash
-pip install pyinstaller
-pyinstaller --clean -y Minsorterbank.spec
-# dist/Minsorterbank.exe      (Windows: single self-contained .exe)
-# dist/Minsorterbank          (Linux: single self-contained binary)
-# dist/Minsorterbank.app      (macOS: single .app bundle)
-```
-
-## Releasing
-
-Push a tag matching `v*` and GitHub Actions will build for Windows x64
-and macOS arm64 (Apple Silicon), then publish them to a Release:
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
 ```
