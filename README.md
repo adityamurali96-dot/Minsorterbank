@@ -7,23 +7,41 @@ into a grouped Deposits / Withdrawals workbook.
 
 ### Desktop app (recommended for everyday users)
 
-Grab the latest installer for your OS from
-[Releases](../../releases/latest):
+Grab the latest download for your OS from
+[Releases](../../releases/latest).
 
-- **Windows** &mdash; `Minsorterbank-windows-x64.exe` &rarr; double-click to
-  run. It&rsquo;s a single self-contained executable; nothing to install.
-- **macOS (Apple Silicon &mdash; M1/M2/M3/M4)** &mdash;
-  `Minsorterbank-macos-arm64.dmg` &rarr; open &rarr; drag the
-  `Minsorterbank` app into Applications &rarr; launch.
+#### Windows
 
-The app launches a small local web UI in your browser, processes the file
-entirely on your machine, and gives you back the sorted `.xlsx`. Nothing is
-uploaded anywhere.
+1. Download `Minsorterbank-windows-portable.zip`.
+2. Right-click the zip &rarr; **Extract All** to a folder you like
+   (e.g. your Desktop).
+3. Open the extracted `Minsorterbank` folder.
+4. Double-click **`Start-Minsorterbank.bat`**.
+5. The first time only, it will ask you to install Python &mdash; just
+   click the big yellow **Download Python** button on the page it opens,
+   tick **&ldquo;Add python.exe to PATH&rdquo;** on the installer&rsquo;s
+   first screen, then double-click `Start-Minsorterbank.bat` again.
+6. Your browser will open at `http://127.0.0.1:<port>`. Upload your
+   statement, get the sorted spreadsheet back.
+
+Why not a `.exe`? Windows Defender and other antivirus tools aggressively
+flag PyInstaller-packed executables as false positives. The launcher
+approach uses real Python (which AVs trust), so it just works.
+
+#### macOS (Apple Silicon &mdash; M1/M2/M3/M4)
+
+1. Download `Minsorterbank-macos-arm64.dmg`.
+2. Double-click it, then drag the `Minsorterbank` app into Applications.
+3. Open Launchpad and click **Minsorterbank**.
 
 > First-launch note on macOS: because the build isn&rsquo;t signed with an
 > Apple Developer ID, macOS will say &ldquo;Apple could not verify
 > Minsorterbank&rdquo;. Right-click the app &rarr; **Open** &rarr;
 > **Open** to bypass that once.
+
+The app launches a small local web UI in your browser, processes the file
+entirely on your machine, and gives you back the sorted `.xlsx`. Nothing is
+uploaded anywhere.
 
 ### CLI
 

@@ -11,20 +11,73 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build (${{ matrix.label }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            label: windows-x64
-            artifact: Minsorterbank-windows-x64.exe
-          - os: macos-14          # Apple Silicon
-            label: macos-arm64
-            artifact: Minsorterbank-macos-arm64.dmg
+  # ------------------------------------------------------------------
+  # Windows: ship a small "portable" zip with a double-click launcher.
+  # The launcher (Start-Minsorterbank.bat) installs Python deps locally
+  # the first time and starts the app on http://127.0.0.1:<port>.
+  # This avoids antivirus false-positives that plague PyInstaller .exe
+  # builds, and the whole archive is a few hundred KB.
+  # ------------------------------------------------------------------
+  windows-portable:
+    name: Build (windows-portable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      - name: Stage portable files
+        run: |
+          set -euxo pipefail
+          mkdir -p staging/Minsorterbank
+          cp -R app staging/Minsorterbank/
+          cp sort_statement.py staging/Minsorterbank/
+          cp requirements.txt staging/Minsorterbank/
+          cp README.md staging/Minsorterbank/
+          cp Start-Minsorterbank.bat staging/Minsorterbank/
+          cat > staging/Minsorterbank/READ-ME-FIRST.txt <<'EOF'
+          Minsorterbank for Windows
+          =========================
+
+          To run the app:
+            1. Double-click  Start-Minsorterbank.bat
+            2. Wait a few seconds. Your web browser will open with
+               the Minsorterbank page on it.
+            3. Use the page to upload a statement and download the
+               sorted spreadsheet.
+
+          The first time you run it, the launcher will install
+          Python dependencies into a local ".venv" folder right
+          next to this file. That takes about 30 seconds and only
+          happens once.
+
+          If Python is not installed yet, the launcher will open
+          the Python download page for you. Install Python (tick
+          "Add python.exe to PATH" on the first screen), then
+          double-click  Start-Minsorterbank.bat  again.
+
+          Nothing leaves your computer; the app runs entirely on
+          localhost.
+          EOF
+
+      - name: Create zip
+        run: |
+          cd staging
+          zip -r ../Minsorterbank-windows-portable.zip Minsorterbank
+          cd ..
+          ls -lh Minsorterbank-windows-portable.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minsorterbank-windows-portable.zip
+          path: Minsorterbank-windows-portable.zip
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # macOS: PyInstaller .app inside a drag-to-Applications DMG.
+  # ------------------------------------------------------------------
+  macos-app:
+    name: Build (macos-arm64)
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -33,73 +86,38 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      # On Windows, the prebuilt PyInstaller bootloader is widely
-      # flagged as a false-positive by antivirus engines (Defender,
-      # Avast, etc.) because real malware shares the same shipped
-      # bootloader binary. Building the bootloader from source on
-      # the runner gives the resulting .exe a fresh fingerprint that
-      # AV signatures haven't been trained on, which dramatically
-      # reduces false positives.
-      - name: Install PyInstaller (Windows, build bootloader from source)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git clone --depth 1 --branch v6.10.0 https://github.com/pyinstaller/pyinstaller.git pyinstaller-src
-          cd pyinstaller-src/bootloader
-          python ./waf distclean all
-          cd ..
-          pip install .
-
-      - name: Install PyInstaller (macOS / Linux, prebuilt)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: pip install pyinstaller==6.10.0
+          pip install pyinstaller==6.10.0
 
       - name: Build with PyInstaller
         shell: bash
         run: pyinstaller --clean -y Minsorterbank.spec
 
-      # ---------- Windows packaging ----------
-      # The spec produces a single dist/Minsorterbank.exe in onefile mode.
-      # Ship that file directly as the release artifact.
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Copy-Item dist/Minsorterbank.exe dist/${{ matrix.artifact }}
-
-      # ---------- macOS packaging ----------
-      - name: Package (macOS)
-        if: runner.os == 'macOS'
+      - name: Package DMG
         shell: bash
         run: |
-          # PyInstaller produces dist/Minsorterbank.app for the BUNDLE target.
-          # Wrap it in a simple DMG (drag-to-Applications).
           mkdir -p dmg_staging
           cp -R dist/Minsorterbank.app dmg_staging/
           ln -s /Applications dmg_staging/Applications
           hdiutil create -volname "Minsorterbank" \
                          -srcfolder dmg_staging \
                          -ov -format UDZO \
-                         "dist/${{ matrix.artifact }}"
+                         "dist/Minsorterbank-macos-arm64.dmg"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+          name: Minsorterbank-macos-arm64.dmg
+          path: dist/Minsorterbank-macos-arm64.dmg
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [windows-portable, macos-app]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
     steps:
