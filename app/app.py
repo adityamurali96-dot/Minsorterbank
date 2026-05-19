@@ -1,8 +1,8 @@
 """Local Flask frontend for sort_statement.
 
-Run directly (`python app/app.py`) or as a PyInstaller-bundled binary. On
-startup it picks a free port, starts the Flask server, then opens the
-default browser at the local URL.
+Run via the Start-Minsorterbank launcher for your OS, or directly:
+`python app/app.py`. On startup it picks a free port, starts the Flask
+server, then opens the default browser at the local URL.
 
 Endpoints:
   GET  /            single-page upload UI
@@ -24,11 +24,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-# Make sort_statement importable whether running from source or PyInstaller bundle.
-if getattr(sys, "frozen", False):
-    BASE = Path(sys._MEIPASS)  # type: ignore[attr-defined]
-else:
-    BASE = Path(__file__).resolve().parent.parent
+BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
 import sort_statement  # noqa: E402

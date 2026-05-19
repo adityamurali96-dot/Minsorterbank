@@ -3,53 +3,51 @@
 Turn an Indian bank statement (ICICI / Axis / HDFC / SBI / generic Excel / CSV)
 into a grouped Deposits / Withdrawals workbook.
 
-## Use it
+Runs entirely on your computer &mdash; nothing is uploaded anywhere.
 
-### Desktop app (recommended for everyday users)
+## Use it (recommended for everyday users)
 
-Grab the latest download for your OS from
-[Releases](../../releases/latest).
-
-#### Windows
-
-1. Download `Minsorterbank-windows-portable.zip`.
-2. Right-click the zip &rarr; **Extract All** to a folder you like
-   (e.g. your Desktop).
+1. Go to [Releases](../../releases/latest) and download
+   **`Minsorterbank.zip`**.
+2. Right-click the zip &rarr; **Extract All** (Windows) or just
+   double-click it (macOS).
 3. Open the extracted `Minsorterbank` folder.
-4. Double-click **`Start-Minsorterbank.bat`**.
-5. The first time only, it will ask you to install Python &mdash; just
-   click the big yellow **Download Python** button on the page it opens,
-   tick **&ldquo;Add python.exe to PATH&rdquo;** on the installer&rsquo;s
-   first screen, then double-click `Start-Minsorterbank.bat` again.
-6. Your browser will open at `http://127.0.0.1:<port>`. Upload your
-   statement, get the sorted spreadsheet back.
+4. Double-click the launcher for your computer:
+   - **Windows** &rarr; `Start-Minsorterbank.bat`
+   - **macOS** &rarr; `Start-Minsorterbank.command`
+5. A small Terminal / Command Prompt window appears (leave it open) and
+   your browser opens the Minsorterbank page at a local address like
+   `http://127.0.0.1:54321`. Upload your statement, download the sorted
+   spreadsheet.
+6. When you&rsquo;re done, close the Terminal / Command Prompt window
+   to quit.
 
-Why not a `.exe`? Windows Defender and other antivirus tools aggressively
-flag PyInstaller-packed executables as false positives. The launcher
-approach uses real Python (which AVs trust), so it just works.
+The launcher will guide you through installing Python the first time if
+you don&rsquo;t already have it (one-time, ~1 minute). After that, every
+run is instant.
 
-#### macOS (Apple Silicon &mdash; M1/M2/M3/M4)
+### macOS first-launch note
 
-1. Download `Minsorterbank-macos-arm64.dmg`.
-2. Double-click it, then drag the `Minsorterbank` app into Applications.
-3. Open Launchpad and click **Minsorterbank**.
+The first time you double-click `Start-Minsorterbank.command`, macOS may
+say &ldquo;Apple cannot check it for malicious software.&rdquo;
+Right-click the file &rarr; **Open** &rarr; **Open**. After that once,
+regular double-click works forever.
 
-> First-launch note on macOS: because the build isn&rsquo;t signed with an
-> Apple Developer ID, macOS will say &ldquo;Apple could not verify
-> Minsorterbank&rdquo;. Right-click the app &rarr; **Open** &rarr;
-> **Open** to bypass that once.
+### Windows first-launch note
 
-The app launches a small local web UI in your browser, processes the file
-entirely on your machine, and gives you back the sorted `.xlsx`. Nothing is
-uploaded anywhere.
+If you don&rsquo;t have Python installed yet, the launcher will open the
+Python download page in your browser. Click the big yellow **Download
+Python** button, run the installer, and on the **first installer
+screen tick &ldquo;Add python.exe to PATH&rdquo;** before clicking
+Install. Then double-click `Start-Minsorterbank.bat` again.
 
-### CLI
+## Use it from the command line
 
 ```bash
 python sort_statement.py path/to/statement.xls
 ```
 
-### Run the web UI from source
+## Run the web UI from source
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -57,20 +55,10 @@ pip install -r requirements.txt
 python app/app.py
 ```
 
-## Build installers locally
-
-```bash
-pip install pyinstaller
-pyinstaller --clean -y Minsorterbank.spec
-# dist/Minsorterbank.exe      (Windows: single self-contained .exe)
-# dist/Minsorterbank          (Linux: single self-contained binary)
-# dist/Minsorterbank.app      (macOS: single .app bundle)
-```
-
 ## Releasing
 
-Push a tag matching `v*` and GitHub Actions will build for Windows x64
-and macOS arm64 (Apple Silicon), then publish them to a Release:
+Push a tag matching `v*` (or `V*`) and GitHub Actions will build the
+cross-platform portable zip and publish it on a Release:
 
 ```bash
 git tag v1.0.0

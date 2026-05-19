@@ -1,4 +1,4 @@
-name: Build release binaries
+name: Build release archive
 
 on:
   push:
@@ -12,14 +12,18 @@ permissions:
 
 jobs:
   # ------------------------------------------------------------------
-  # Windows: ship a small "portable" zip with a double-click launcher.
-  # The launcher (Start-Minsorterbank.bat) installs Python deps locally
-  # the first time and starts the app on http://127.0.0.1:<port>.
-  # This avoids antivirus false-positives that plague PyInstaller .exe
-  # builds, and the whole archive is a few hundred KB.
+  # One cross-platform portable zip containing the app source plus a
+  # double-click launcher for each OS:
+  #   - Start-Minsorterbank.bat       (Windows)
+  #   - Start-Minsorterbank.command   (macOS)
+  # The launchers install Python deps locally on first run and open
+  # the Minsorterbank UI in the user's browser on http://127.0.0.1.
+  # This sidesteps Windows-Defender false positives that PyInstaller
+  # one-file .exe builds suffer from, and removes the need for code
+  # signing on either platform.
   # ------------------------------------------------------------------
-  windows-portable:
-    name: Build (windows-portable)
+  build:
+    name: Build portable zip
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,26 +37,51 @@ jobs:
           cp requirements.txt staging/Minsorterbank/
           cp README.md staging/Minsorterbank/
           cp Start-Minsorterbank.bat staging/Minsorterbank/
+          cp Start-Minsorterbank.command staging/Minsorterbank/
+          chmod +x staging/Minsorterbank/Start-Minsorterbank.command
+
           cat > staging/Minsorterbank/READ-ME-FIRST.txt <<'EOF'
-          Minsorterbank for Windows
-          =========================
+          Minsorterbank
+          =============
 
-          To run the app:
-            1. Double-click  Start-Minsorterbank.bat
-            2. Wait a few seconds. Your web browser will open with
-               the Minsorterbank page on it.
-            3. Use the page to upload a statement and download the
-               sorted spreadsheet.
+          Pick the line for your computer below.
 
-          The first time you run it, the launcher will install
-          Python dependencies into a local ".venv" folder right
-          next to this file. That takes about 30 seconds and only
-          happens once.
+          ----------------------------------------------------------
+          Windows
+          ----------------------------------------------------------
+            Double-click:   Start-Minsorterbank.bat
 
-          If Python is not installed yet, the launcher will open
-          the Python download page for you. Install Python (tick
-          "Add python.exe to PATH" on the first screen), then
-          double-click  Start-Minsorterbank.bat  again.
+            First time only: if Python is not installed yet, the
+            launcher will open the Python download page in your
+            browser. Click the big yellow "Download Python" button,
+            run the installer, and on the FIRST installer screen
+            TICK the box that says "Add python.exe to PATH".
+            Then double-click  Start-Minsorterbank.bat  again.
+
+          ----------------------------------------------------------
+          macOS
+          ----------------------------------------------------------
+            Double-click:   Start-Minsorterbank.command
+
+            First time only: macOS may say
+              "Apple cannot check it for malicious software."
+            Right-click  Start-Minsorterbank.command  -> Open ->
+            Open. After this once, regular double-click works.
+
+            If Python 3 is not installed yet, the launcher will
+            pop up a dialog and open the Python download page.
+            Install Python, then double-click the file again.
+
+          ----------------------------------------------------------
+          What happens next
+          ----------------------------------------------------------
+          A Terminal / Command Prompt window appears (leave it
+          open) and your default browser opens the Minsorterbank
+          page on a local address such as http://127.0.0.1:54321.
+          Upload your bank statement and download the sorted
+          spreadsheet.
+
+          Close the Terminal / Command Prompt window to quit.
 
           Nothing leaves your computer; the app runs entirely on
           localhost.
@@ -60,64 +89,26 @@ jobs:
 
       - name: Create zip
         run: |
+          set -euxo pipefail
           cd staging
-          zip -r ../Minsorterbank-windows-portable.zip Minsorterbank
+          # -y preserves symlinks; not strictly needed here but harmless.
+          # Use zip (not Compress-Archive) so the executable bit on the
+          # .command file survives extraction on macOS.
+          zip -r ../Minsorterbank.zip Minsorterbank
           cd ..
-          ls -lh Minsorterbank-windows-portable.zip
+          ls -lh Minsorterbank.zip
+          unzip -l Minsorterbank.zip
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Minsorterbank-windows-portable.zip
-          path: Minsorterbank-windows-portable.zip
-          if-no-files-found: error
-
-  # ------------------------------------------------------------------
-  # macOS: PyInstaller .app inside a drag-to-Applications DMG.
-  # ------------------------------------------------------------------
-  macos-app:
-    name: Build (macos-arm64)
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller==6.10.0
-
-      - name: Build with PyInstaller
-        shell: bash
-        run: pyinstaller --clean -y Minsorterbank.spec
-
-      - name: Package DMG
-        shell: bash
-        run: |
-          mkdir -p dmg_staging
-          cp -R dist/Minsorterbank.app dmg_staging/
-          ln -s /Applications dmg_staging/Applications
-          hdiutil create -volname "Minsorterbank" \
-                         -srcfolder dmg_staging \
-                         -ov -format UDZO \
-                         "dist/Minsorterbank-macos-arm64.dmg"
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Minsorterbank-macos-arm64.dmg
-          path: dist/Minsorterbank-macos-arm64.dmg
+          name: Minsorterbank.zip
+          path: Minsorterbank.zip
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
-    needs: [windows-portable, macos-app]
+    needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
     steps:
