@@ -19,7 +19,7 @@ jobs:
         include:
           - os: windows-latest
             label: windows-x64
-            artifact: Minsorterbank-windows-x64.zip
+            artifact: Minsorterbank-windows-x64.exe
           - os: macos-14          # Apple Silicon
             label: macos-arm64
             artifact: Minsorterbank-macos-arm64.dmg
@@ -44,11 +44,13 @@ jobs:
         run: pyinstaller --clean -y Minsorterbank.spec
 
       # ---------- Windows packaging ----------
+      # The spec produces a single dist/Minsorterbank.exe in onefile mode.
+      # Ship that file directly as the release artifact.
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/Minsorterbank/* -DestinationPath dist/${{ matrix.artifact }}
+          Copy-Item dist/Minsorterbank.exe dist/${{ matrix.artifact }}
 
       # ---------- macOS packaging ----------
       - name: Package (macOS)

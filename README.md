@@ -10,12 +10,11 @@ into a grouped Deposits / Withdrawals workbook.
 Grab the latest installer for your OS from
 [Releases](../../releases/latest):
 
-- **Windows** &mdash; `Minsorterbank-windows-x64.zip` &rarr; unzip &rarr; run
-  `Minsorterbank.exe`.
+- **Windows** &mdash; `Minsorterbank-windows-x64.exe` &rarr; double-click to
+  run. It&rsquo;s a single self-contained executable; nothing to install.
 - **macOS (Apple Silicon &mdash; M1/M2/M3/M4)** &mdash;
-  `Minsorterbank-macos-arm64.dmg` &rarr; drag into Applications &rarr; open.
-- **macOS (Intel)** &mdash; `Minsorterbank-macos-intel.dmg` &rarr; drag into
-  Applications &rarr; open.
+  `Minsorterbank-macos-arm64.dmg` &rarr; open &rarr; drag the
+  `Minsorterbank` app into Applications &rarr; launch.
 
 The app launches a small local web UI in your browser, processes the file
 entirely on your machine, and gives you back the sorted `.xlsx`. Nothing is
@@ -45,14 +44,15 @@ python app/app.py
 ```bash
 pip install pyinstaller
 pyinstaller --clean -y Minsorterbank.spec
-# dist/Minsorterbank/         (Windows / Linux folder bundle)
-# dist/Minsorterbank.app      (macOS .app bundle)
+# dist/Minsorterbank.exe      (Windows: single self-contained .exe)
+# dist/Minsorterbank          (Linux: single self-contained binary)
+# dist/Minsorterbank.app      (macOS: single .app bundle)
 ```
 
 ## Releasing
 
-Push a tag matching `v*` and GitHub Actions will build for Windows x64,
-macOS Intel, and macOS arm64, then publish them to a Release:
+Push a tag matching `v*` and GitHub Actions will build for Windows x64
+and macOS arm64 (Apple Silicon), then publish them to a Release:
 
 ```bash
 git tag v1.0.0
