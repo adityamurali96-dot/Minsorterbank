@@ -274,7 +274,13 @@ def _header_match(needle: str, cell: str) -> bool:
 
 
 def _find_header_row_any(df: pd.DataFrame) -> Optional[int]:
-    """Find the row that looks like a transaction header (date + remarks + amount)."""
+    """Find the row that looks like a transaction header.
+
+    Strong match: date + remarks + amount tokens all present.
+    Weak match (fallback): date + amount tokens present (remarks column is
+    inferred later as the widest non-date/non-amount text column).
+    """
+    weak_match: Optional[int] = None
     for i in range(min(60, len(df))):
         row_lc = [str(v).lower().strip() for v in df.iloc[i].tolist()]
         has_date = any(any(_header_match(t, v) for t in _DATE_TOKENS) for v in row_lc)
@@ -283,7 +289,9 @@ def _find_header_row_any(df: pd.DataFrame) -> Optional[int]:
                       for v in row_lc)
         if has_date and has_rem and has_amt:
             return i
-    return None
+        if has_date and has_amt and weak_match is None:
+            weak_match = i
+    return weak_match
 
 
 def _pick_col(header: list[str], needles: tuple[str, ...],
@@ -309,15 +317,39 @@ def _parse_from_df(raw: pd.DataFrame, extract_fn) -> pd.DataFrame:
     matter — we only care about header names."""
     hdr = _find_header_row_any(raw)
     if hdr is None:
-        raise RuntimeError("Couldn't locate transaction header row")
+        preview = []
+        for i in range(min(8, len(raw))):
+            cells = [str(v) for v in raw.iloc[i].tolist() if str(v).strip() and str(v) != "nan"]
+            if cells:
+                preview.append(f"  row {i}: {' | '.join(cells)[:160]}")
+        sample = "\n".join(preview) if preview else "  (no readable rows)"
+        raise RuntimeError(
+            "Couldn't locate transaction header row. "
+            "Expected a row containing a date column (e.g. 'Date', 'Txn Date') "
+            "and an amount column (e.g. 'Debit', 'Credit', 'Withdrawal'). "
+            f"First rows seen:\n{sample}"
+        )
     header = [str(v).lower().strip() for v in raw.iloc[hdr].tolist()]
 
     col_date = _pick_col(header, _DATE_TOKENS)
-    col_rem = _pick_col(header, _REMARKS_TOKENS)
     col_wd = _pick_col(header, _DEBIT_TOKENS)
     # Don't let deposit column collide with the debit column
     col_dep = _pick_col(header, _CREDIT_TOKENS, avoid={col_wd} if col_wd is not None else None)
     col_bal = _pick_col(header, _BALANCE_TOKENS)
+    col_rem = _pick_col(header, _REMARKS_TOKENS)
+    if col_rem is None:
+        # Fallback: pick the widest text column that isn't date/amount/balance.
+        used = {c for c in (col_date, col_wd, col_dep, col_bal) if c is not None}
+        body = raw.iloc[hdr + 1:]
+        best_idx, best_width = None, 0
+        for idx in range(body.shape[1]):
+            if idx in used:
+                continue
+            col_vals = body.iloc[:, idx].astype(str)
+            width = col_vals.str.len().mean() if len(col_vals) else 0
+            if width > best_width:
+                best_width, best_idx = width, idx
+        col_rem = best_idx
 
     df = raw.iloc[hdr + 1:].copy().reset_index(drop=True)
 
@@ -970,11 +1002,18 @@ def _write_sheet(ws, title, df, amount_col, threshold=2):
         row += 1
         row += 1  # spacer
 
+    def _date_sort(sub_df):
+        return sub_df.sort_values(
+            "txn_date",
+            key=lambda s: pd.to_datetime(s, errors="coerce", dayfirst=True),
+            kind="stable",
+            na_position="last",
+        )
+
     for b in named:
-        sub = df[df["bucket"] == b].sort_values("txn_date")
-        write_group(b, sub)
+        write_group(b, _date_sort(df[df["bucket"] == b]))
     if not other_df.empty:
-        write_group("OTHER (one-offs)", other_df.sort_values("txn_date"))
+        write_group("OTHER (one-offs)", _date_sort(other_df))
 
     gt_label = ws.cell(row=row, column=3, value="GRAND TOTAL")
     gt_label.font = BOLD
