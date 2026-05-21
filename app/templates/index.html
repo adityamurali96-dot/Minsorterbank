@@ -63,13 +63,20 @@
       <button id="again" type="button" class="link">Sort another file</button>
     </section>
 
-    <section id="headerPicker" class="header-picker hidden">
-      <h2>Pick the header row</h2>
-      <p>We couldn&rsquo;t auto-detect which row contains your column headers
-        (Date, Description, Amount, etc.). Click the row that looks like the
-        header.</p>
-      <ol id="previewRows" class="preview-rows"></ol>
-      <button id="headerCancel" type="button" class="link">Cancel</button>
+    <section id="columnMapper" class="column-mapper hidden">
+      <h2>Map columns</h2>
+      <p>We&rsquo;ve filled in our best guesses below. Set each column to its
+        role &mdash; Date, Narration, Debit, Credit, Balance &mdash; or leave it
+        as <em>Ignore</em>. Then click the row where transaction data starts
+        and hit Sort.</p>
+      <p id="mapperError" class="mapper-error hidden"></p>
+      <div class="preview-wrap">
+        <table id="previewTable" class="preview-table"></table>
+      </div>
+      <div class="mapper-actions">
+        <button id="mapperSort" type="button" class="btn">Sort with this mapping</button>
+        <button id="mapperCancel" type="button" class="link">Cancel</button>
+      </div>
     </section>
 
     <section id="error" class="error hidden">
