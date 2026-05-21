@@ -15,6 +15,11 @@
   const errorAgainBtn = document.getElementById("errorAgain");
   const bankSelect = document.getElementById("bankSelect");
   const hangingSelect = document.getElementById("hangingSelect");
+  const headerPicker = document.getElementById("headerPicker");
+  const previewRows = document.getElementById("previewRows");
+  const headerCancel = document.getElementById("headerCancel");
+
+  let lastFile = null;
 
   function show(el) { el.classList.remove("hidden"); }
   function hide(el) { el.classList.add("hidden"); }
@@ -23,8 +28,10 @@
     hide(status);
     hide(result);
     hide(errorBox);
+    hide(headerPicker);
     show(drop);
     fileInput.value = "";
+    lastFile = null;
   }
 
   drop.addEventListener("click", () => fileInput.click());
@@ -64,21 +71,57 @@
 
   againBtn.addEventListener("click", reset);
   errorAgainBtn.addEventListener("click", reset);
+  headerCancel.addEventListener("click", reset);
 
-  async function submit(file) {
+  function renderHeaderPicker(preview) {
+    previewRows.innerHTML = "";
+    preview.forEach((row) => {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = row.text;
+      btn.addEventListener("click", () => {
+        if (lastFile) submit(lastFile, row.index);
+      });
+      li.appendChild(btn);
+      previewRows.appendChild(li);
+    });
+    hide(status);
+    hide(errorBox);
+    hide(result);
+    show(headerPicker);
+  }
+
+  async function submit(file, headerRow) {
+    lastFile = file;
     hide(drop);
     hide(result);
     hide(errorBox);
-    statusText.textContent = `Processing ${file.name}…`;
+    hide(headerPicker);
+    statusText.textContent = headerRow != null
+      ? `Re-parsing ${file.name} with chosen header row…`
+      : `Processing ${file.name}…`;
     show(status);
 
     const fd = new FormData();
     fd.append("file", file);
     fd.append("bank", (bankSelect && bankSelect.value) || "auto");
     fd.append("hanging", (hangingSelect && hangingSelect.value) || "no");
+    if (headerRow != null) fd.append("header_row", String(headerRow));
 
     try {
       const res = await fetch("/api/sort", { method: "POST", body: fd });
+
+      if (res.status === 422) {
+        let j = null;
+        try { j = await res.json(); } catch (_) {}
+        if (j && j.needs_header && Array.isArray(j.preview) && j.preview.length) {
+          renderHeaderPicker(j.preview);
+          return;
+        }
+        throw new Error((j && j.error) || `HTTP ${res.status}`);
+      }
+
       if (!res.ok) {
         let msg = `HTTP ${res.status}`;
         try {
