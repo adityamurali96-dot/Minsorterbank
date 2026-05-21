@@ -28,6 +28,7 @@ BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
 import sort_statement  # noqa: E402
+import merge_tabula  # noqa: E402
 
 
 app = Flask(
@@ -68,14 +69,27 @@ def api_sort():
         f.save(tmp.name)
         in_path = Path(tmp.name)
 
+    merged_path = None
     try:
         bank_choice = (request.form.get("bank") or "auto").strip().lower()
-        profile = _resolve_profile(bank_choice, in_path)
-        df = profile.parse(in_path)
+        hanging = (request.form.get("hanging") or "no").strip().lower()
+
+        parse_path = in_path
+        if hanging == "yes":
+            if suffix.lower() != ".xlsx":
+                return jsonify({
+                    "error": "Tabula merge requires an .xlsx file."
+                }), 400
+            merged_path = in_path.with_suffix(".merged.xlsx")
+            merge_tabula.merge_statement(in_path, merged_path)
+            parse_path = merged_path
+
+        profile = _resolve_profile(bank_choice, parse_path)
+        df = profile.parse(parse_path)
         extracted = int(df["counterparty"].notna().sum())
 
         buf = io.BytesIO()
-        out_path = in_path.with_suffix(".sorted.xlsx")
+        out_path = parse_path.with_suffix(".sorted.xlsx")
         sort_statement.write_workbook(df, out_path, bank_name=profile.name)
         buf.write(out_path.read_bytes())
         buf.seek(0)
@@ -109,6 +123,11 @@ def api_sort():
             in_path.unlink()
         except OSError:
             pass
+        if merged_path is not None:
+            try:
+                merged_path.unlink()
+            except OSError:
+                pass
 
 
 def _free_port() -> int:
