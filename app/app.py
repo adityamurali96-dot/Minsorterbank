@@ -38,6 +38,18 @@ app = Flask(
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
 
 
+_PROFILE_BY_NAME = {p.name: p for p in sort_statement.PROFILES}
+
+
+def _resolve_profile(choice: str, in_path):
+    """Pick a profile from the user's dropdown choice, falling back to auto-detect."""
+    if choice and choice != "auto":
+        prof = _PROFILE_BY_NAME.get(choice)
+        if prof is not None:
+            return prof
+    return sort_statement.detect_profile(in_path)
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -57,7 +69,8 @@ def api_sort():
         in_path = Path(tmp.name)
 
     try:
-        profile = sort_statement.detect_profile(in_path)
+        bank_choice = (request.form.get("bank") or "auto").strip().lower()
+        profile = _resolve_profile(bank_choice, in_path)
         df = profile.parse(in_path)
         extracted = int(df["counterparty"].notna().sum())
 

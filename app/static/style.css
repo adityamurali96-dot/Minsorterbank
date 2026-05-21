@@ -44,6 +44,44 @@ h1 {
   line-height: 1.5;
 }
 
+.bank-pick {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.bank-pick label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.bank-pick select {
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.bank-pick select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+.bank-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .drop {
   background: var(--card);
   border: 2px dashed var(--border);

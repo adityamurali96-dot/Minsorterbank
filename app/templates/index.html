@@ -14,6 +14,19 @@
         Supports ICICI, Axis, HDFC, SBI &mdash; or any tabular Excel/CSV.</p>
     </header>
 
+    <section class="bank-pick">
+      <label for="bankSelect">Bank</label>
+      <select id="bankSelect">
+        <option value="auto" selected>Auto-detect</option>
+        <option value="icici">ICICI</option>
+        <option value="axis">Axis</option>
+        <option value="hdfc">HDFC</option>
+        <option value="sbi">SBI</option>
+        <option value="generic">Generic (other)</option>
+      </select>
+      <p class="bank-hint">Pick your bank to skip auto-detection and improve parsing accuracy.</p>
+    </section>
+
     <section id="drop" class="drop" tabindex="0">
       <input type="file" id="file" hidden
              accept=".xls,.xlsx,.csv,.txt,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
