@@ -5,8 +5,11 @@ Run via the Start-Minsorterbank launcher for your OS, or directly:
 server, then opens the default browser at the local URL.
 
 Endpoints:
-  GET  /            single-page upload UI
-  POST /api/sort    multipart upload -> returns the sorted .xlsx
+  GET  /             single-page upload UI
+  POST /api/preview  multipart upload -> JSON of first rows + auto-detected
+                     column mapping suggestions (for the mapping UI)
+  POST /api/sort     multipart upload -> returns the sorted .xlsx; accepts
+                     explicit column indices to bypass auto-detection
 """
 
 from __future__ import annotations
@@ -51,9 +54,87 @@ def _resolve_profile(choice: str, in_path):
     return sort_statement.detect_profile(in_path)
 
 
+def _save_upload(file_storage):
+    """Persist an uploaded file to a NamedTemporaryFile and return (path, suffix)."""
+    suffix = Path(file_storage.filename).suffix or ".xls"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        file_storage.save(tmp.name)
+        return Path(tmp.name), suffix
+
+
+def _apply_hanging_merge(in_path: Path, suffix: str):
+    """Merge wrapped Tabula rows if requested. Returns the path to parse from,
+    plus a path to clean up (or None)."""
+    if suffix.lower() != ".xlsx":
+        raise ValueError("Tabula merge requires an .xlsx file.")
+    merged_path = in_path.with_suffix(".merged.xlsx")
+    merge_tabula.merge_statement(in_path, merged_path)
+    return merged_path, merged_path
+
+
+def _parse_int_field(name: str, allow_blank: bool = False):
+    """Read a form field as an int. Returns None if absent (and allow_blank).
+    Raises ValueError with a user-friendly message otherwise."""
+    raw = (request.form.get(name) or "").strip()
+    if not raw:
+        if allow_blank:
+            return None
+        raise ValueError(f"Missing required field: {name}")
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"Invalid {name}: {raw!r}")
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/preview", methods=["POST"])
+def api_preview():
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided."}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "Empty filename."}), 400
+
+    in_path, suffix = _save_upload(f)
+    merged_path = None
+    try:
+        hanging = (request.form.get("hanging") or "no").strip().lower()
+        bank_choice = (request.form.get("bank") or "auto").strip().lower()
+
+        parse_path = in_path
+        if hanging == "yes":
+            try:
+                parse_path, merged_path = _apply_hanging_merge(in_path, suffix)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+
+        _raw_text, raw_df = sort_statement._load_raw(parse_path)
+        if raw_df is None or raw_df.shape[1] == 0:
+            return jsonify({
+                "error": "Couldn't read any tabular data from this file. "
+                         "If it's a PDF export, try the 'Hanging rows' option."
+            }), 422
+
+        payload = sort_statement.build_preview(raw_df)
+        profile = _resolve_profile(bank_choice, parse_path)
+        payload["profile_name"] = profile.name
+        return jsonify(payload)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+    finally:
+        for p in (in_path, merged_path):
+            if p is None:
+                continue
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
 
 @app.route("/api/sort", methods=["POST"])
@@ -64,42 +145,73 @@ def api_sort():
     if not f.filename:
         return jsonify({"error": "Empty filename."}), 400
 
-    suffix = Path(f.filename).suffix or ".xls"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        f.save(tmp.name)
-        in_path = Path(tmp.name)
+    in_path, suffix = _save_upload(f)
 
     merged_path = None
     try:
         bank_choice = (request.form.get("bank") or "auto").strip().lower()
         hanging = (request.form.get("hanging") or "no").strip().lower()
-        header_row_raw = (request.form.get("header_row") or "").strip()
-        header_row = None
-        if header_row_raw:
+
+        try:
+            header_row = _parse_int_field("header_row", allow_blank=True)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+        # Explicit column mapping path -- all five required if any are set.
+        explicit_fields = ("data_start_row", "col_date", "col_remarks",
+                           "col_withdrawal", "col_deposit")
+        explicit_any = any((request.form.get(k) or "").strip() for k in explicit_fields)
+        explicit_cols = None
+        if explicit_any:
             try:
-                header_row = int(header_row_raw)
-            except ValueError:
-                return jsonify({"error": f"Invalid header_row: {header_row_raw!r}"}), 400
+                explicit_cols = {
+                    "data_start_row": _parse_int_field("data_start_row"),
+                    "col_date": _parse_int_field("col_date"),
+                    "col_remarks": _parse_int_field("col_remarks"),
+                    "col_withdrawal": _parse_int_field("col_withdrawal"),
+                    "col_deposit": _parse_int_field("col_deposit"),
+                    "col_balance": _parse_int_field("col_balance", allow_blank=True),
+                }
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
 
         parse_path = in_path
         if hanging == "yes":
-            if suffix.lower() != ".xlsx":
-                return jsonify({
-                    "error": "Tabula merge requires an .xlsx file."
-                }), 400
-            merged_path = in_path.with_suffix(".merged.xlsx")
-            merge_tabula.merge_statement(in_path, merged_path)
-            parse_path = merged_path
+            try:
+                parse_path, merged_path = _apply_hanging_merge(in_path, suffix)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
 
         profile = _resolve_profile(bank_choice, parse_path)
-        try:
-            df = profile.parse(parse_path, header_row=header_row)
-        except sort_statement.HeaderNotFoundError as e:
-            return jsonify({
-                "needs_header": True,
-                "error": str(e),
-                "preview": e.preview,
-            }), 422
+
+        if explicit_cols is not None:
+            _raw_text, raw_df = sort_statement._load_raw(parse_path)
+            if raw_df is None:
+                return jsonify({
+                    "error": "Couldn't read tabular data from this file."
+                }), 422
+            try:
+                df = sort_statement.parse_with_explicit_columns(
+                    raw_df,
+                    data_start_row=explicit_cols["data_start_row"],
+                    col_date=explicit_cols["col_date"],
+                    col_remarks=explicit_cols["col_remarks"],
+                    col_withdrawal=explicit_cols["col_withdrawal"],
+                    col_deposit=explicit_cols["col_deposit"],
+                    col_balance=explicit_cols["col_balance"],
+                    extract_fn=profile.extract,
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+        else:
+            try:
+                df = profile.parse(parse_path, header_row=header_row)
+            except sort_statement.HeaderNotFoundError as e:
+                return jsonify({
+                    "needs_header": True,
+                    "error": str(e),
+                    "preview": e.preview,
+                }), 422
         extracted = int(df["counterparty"].notna().sum())
 
         buf = io.BytesIO()

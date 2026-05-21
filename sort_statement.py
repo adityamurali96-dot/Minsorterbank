@@ -366,39 +366,21 @@ def _build_preview(raw: pd.DataFrame, limit: int = 15) -> list[dict]:
     return preview
 
 
-def _parse_from_df(
-    raw: pd.DataFrame,
-    extract_fn,
-    header_row: Optional[int] = None,
-) -> pd.DataFrame:
-    """Parse a transaction DataFrame by locating columns from header text.
+def _resolve_columns_from_header(raw: pd.DataFrame, header_row: int) -> dict:
+    """Resolve transaction column indices from a header row + the data body.
 
-    Used by every bank profile so detection format (xls / xlsx / html) doesn't
-    matter — we only care about header names. Pass ``header_row`` to skip
-    auto-detection and use that row index as the header."""
-    if header_row is not None:
-        if header_row < 0 or header_row >= len(raw):
-            raise RuntimeError(
-                f"Header row {header_row} is out of range (file has {len(raw)} rows)."
-            )
-        hdr = header_row
-    else:
-        hdr = _find_header_row_any(raw)
-        if hdr is None:
-            raise HeaderNotFoundError(_build_preview(raw))
-    header = [str(v).lower().strip() for v in raw.iloc[hdr].tolist()]
-    body = raw.iloc[hdr + 1:]
+    Returns ``{"col_date", "col_remarks", "col_withdrawal", "col_deposit",
+    "col_balance"}``. Any key may be ``None`` if neither header text nor data
+    inference could place a column."""
+    header = [str(v).lower().strip() for v in raw.iloc[header_row].tolist()]
+    body = raw.iloc[header_row + 1:]
 
     col_date = _pick_col(header, _DATE_TOKENS)
     col_wd = _pick_col(header, _DEBIT_TOKENS)
-    # Don't let deposit column collide with the debit column
     col_dep = _pick_col(header, _CREDIT_TOKENS, avoid={col_wd} if col_wd is not None else None)
     col_bal = _pick_col(header, _BALANCE_TOKENS)
     col_rem = _pick_col(header, _REMARKS_TOKENS)
 
-    # Data-based inference for whatever the header tokens didn't resolve.
-    # Lets the parser handle non-English / non-standard headers (e.g. 'Money Out',
-    # 'Tarikh') once the user has confirmed the header row.
     classified = _classify_columns(body)
     used = {c for c in (col_date, col_wd, col_dep, col_bal, col_rem) if c is not None}
 
@@ -412,7 +394,6 @@ def _parse_from_df(
     if col_wd is None or col_dep is None:
         amount_cols = [idx for idx, kind in classified.items()
                        if idx not in used and kind == "amount"]
-        # Header text hints — even if not exact matches — disambiguate debit vs credit
         debit_hints = ("out", "debit", "dr", "withdraw", "paid", "spent")
         credit_hints = ("in", "credit", "cr", "deposit", "received", "in ", "earned")
 
@@ -434,7 +415,6 @@ def _parse_from_df(
             else:
                 unassigned.append(idx)
 
-        # Fall back to column order convention: debit before credit
         for idx in unassigned:
             if col_wd is None:
                 col_wd = idx
@@ -443,7 +423,6 @@ def _parse_from_df(
         used = {c for c in (col_date, col_wd, col_dep, col_bal, col_rem) if c is not None}
 
     if col_rem is None:
-        # Widest text column that isn't date/amount/balance.
         best_idx, best_width = None, 0
         for idx in range(body.shape[1]):
             if idx in used:
@@ -454,24 +433,45 @@ def _parse_from_df(
                 best_width, best_idx = width, idx
         col_rem = best_idx
 
-    df = raw.iloc[hdr + 1:].copy().reset_index(drop=True)
+    return {
+        "col_date": col_date,
+        "col_remarks": col_rem,
+        "col_withdrawal": col_wd,
+        "col_deposit": col_dep,
+        "col_balance": col_bal,
+    }
+
+
+def _numify(series: pd.Series) -> pd.Series:
+    # Strip currency symbols / commas / quotes before to_numeric
+    cleaned = series.astype(str).str.replace(",", "", regex=False) \
+        .str.replace("₹", "", regex=False).str.strip().str.strip('"').str.strip()
+    return pd.to_numeric(cleaned, errors="coerce").fillna(0)
+
+
+def _build_txn_frame(
+    raw: pd.DataFrame,
+    data_start_row: int,
+    col_date: Optional[int],
+    col_remarks: Optional[int],
+    col_withdrawal: Optional[int],
+    col_deposit: Optional[int],
+    col_balance: Optional[int],
+    extract_fn,
+) -> pd.DataFrame:
+    """Slice the body and project it into the canonical txn DataFrame."""
+    df = raw.iloc[data_start_row:].copy().reset_index(drop=True)
 
     def col(i):
         return df.iloc[:, i] if i is not None else pd.Series([None] * len(df))
 
-    def numify(series):
-        # Strip currency symbols / commas / quotes before to_numeric
-        cleaned = series.astype(str).str.replace(",", "", regex=False) \
-            .str.replace("₹", "", regex=False).str.strip().str.strip('"').str.strip()
-        return pd.to_numeric(cleaned, errors="coerce").fillna(0)
-
     out = pd.DataFrame({
         "txn_date": col(col_date),
-        "remarks": col(col_rem),
-        "withdrawal": numify(col(col_wd)),
-        "deposit": numify(col(col_dep)),
+        "remarks": col(col_remarks),
+        "withdrawal": _numify(col(col_withdrawal)),
+        "deposit": _numify(col(col_deposit)),
         "balance": pd.to_numeric(
-            col(col_bal).astype(str).str.replace(",", "", regex=False).str.strip(),
+            col(col_balance).astype(str).str.replace(",", "", regex=False).str.strip(),
             errors="coerce",
         ),
     })
@@ -481,6 +481,125 @@ def _parse_from_df(
     out = out[(out["withdrawal"] > 0) | (out["deposit"] > 0)].reset_index(drop=True)
     out["counterparty"] = out["remarks"].map(extract_fn)
     return out
+
+
+def parse_with_explicit_columns(
+    raw: pd.DataFrame,
+    data_start_row: int,
+    col_date: int,
+    col_remarks: int,
+    col_withdrawal: int,
+    col_deposit: int,
+    col_balance: Optional[int],
+    extract_fn,
+) -> pd.DataFrame:
+    """Parse a transaction DataFrame using user-supplied column indices.
+
+    Skips header auto-detection and column inference entirely. ``col_balance``
+    may be ``None`` to mean "no balance column"; the other four are required.
+    """
+    if raw is None or raw.shape[1] == 0:
+        raise ValueError("Could not read any tabular data from the file.")
+    n_rows, n_cols = raw.shape
+    if data_start_row < 0 or data_start_row >= n_rows:
+        raise ValueError(
+            f"Data start row {data_start_row} is out of range (file has {n_rows} rows)."
+        )
+    required = {
+        "col_date": col_date,
+        "col_remarks": col_remarks,
+        "col_withdrawal": col_withdrawal,
+        "col_deposit": col_deposit,
+    }
+    for name, val in required.items():
+        if val is None or val < 0 or val >= n_cols:
+            raise ValueError(
+                f"{name}={val} is out of range (file has {n_cols} columns)."
+            )
+    if col_balance is not None and (col_balance < 0 or col_balance >= n_cols):
+        raise ValueError(
+            f"col_balance={col_balance} is out of range (file has {n_cols} columns)."
+        )
+    return _build_txn_frame(
+        raw, data_start_row,
+        col_date, col_remarks, col_withdrawal, col_deposit, col_balance,
+        extract_fn,
+    )
+
+
+def build_preview(raw: pd.DataFrame, row_limit: int = 15) -> dict:
+    """Return preview rows + auto-detected header/column suggestions.
+
+    Used by the ``/api/preview`` endpoint to populate the column-mapping UI.
+    Suggestions may be ``None`` when auto-detection can't decide -- the UI
+    will just leave those columns as "Ignore" for the user to set.
+    """
+    if raw is None or raw.shape[1] == 0:
+        return {
+            "rows": [],
+            "n_cols": 0,
+            "suggested_header_row": None,
+            "suggested_columns": {
+                "col_date": None, "col_remarks": None,
+                "col_withdrawal": None, "col_deposit": None, "col_balance": None,
+            },
+        }
+    n_rows, n_cols = raw.shape
+    limit = min(row_limit, n_rows)
+    rows: list[list[str]] = []
+    for i in range(limit):
+        row = []
+        for v in raw.iloc[i].tolist():
+            s = "" if v is None else str(v)
+            if s.lower() == "nan":
+                s = ""
+            row.append(s)
+        rows.append(row)
+
+    header_row = _find_header_row_any(raw)
+    if header_row is not None:
+        cols = _resolve_columns_from_header(raw, header_row)
+    else:
+        cols = {
+            "col_date": None, "col_remarks": None,
+            "col_withdrawal": None, "col_deposit": None, "col_balance": None,
+        }
+    return {
+        "rows": rows,
+        "n_cols": n_cols,
+        "suggested_header_row": header_row,
+        "suggested_columns": cols,
+    }
+
+
+def _parse_from_df(
+    raw: pd.DataFrame,
+    extract_fn,
+    header_row: Optional[int] = None,
+) -> pd.DataFrame:
+    """Parse a transaction DataFrame by locating columns from header text.
+
+    Used by every bank profile so detection format (xls / xlsx / html) doesn't
+    matter — we only care about header names. Pass ``header_row`` to skip
+    auto-detection and use that row index as the header."""
+    if header_row is not None:
+        if header_row < 0 or header_row >= len(raw):
+            raise RuntimeError(
+                f"Header row {header_row} is out of range (file has {len(raw)} rows)."
+            )
+        hdr = header_row
+    else:
+        hdr = _find_header_row_any(raw)
+        if hdr is None:
+            raise HeaderNotFoundError(_build_preview(raw))
+
+    cols = _resolve_columns_from_header(raw, hdr)
+    return _build_txn_frame(
+        raw, hdr + 1,
+        cols["col_date"], cols["col_remarks"],
+        cols["col_withdrawal"], cols["col_deposit"], cols["col_balance"],
+        extract_fn,
+    )
 
 
 def _find_header_row(df: pd.DataFrame, *needles: str) -> Optional[int]:
