@@ -217,7 +217,7 @@ class Profile:
         return False
 
     @classmethod
-    def parse(cls, path: Path) -> pd.DataFrame:
+    def parse(cls, path: Path, header_row: Optional[int] = None) -> pd.DataFrame:
         raise NotImplementedError
 
     @classmethod
@@ -310,26 +310,84 @@ def _pick_col(header: list[str], needles: tuple[str, ...],
     return None
 
 
-def _parse_from_df(raw: pd.DataFrame, extract_fn) -> pd.DataFrame:
+class HeaderNotFoundError(RuntimeError):
+    """Raised when the header row can't be auto-detected.
+
+    Carries a structured preview of the first rows so the UI can ask the user
+    to pick the header row manually.
+    """
+
+    def __init__(self, preview: list[dict]):
+        self.preview = preview
+        super().__init__(
+            "Couldn't locate transaction header row. Expected a row containing "
+            "a date column (e.g. 'Date', 'Txn Date') and an amount column "
+            "(e.g. 'Debit', 'Credit', 'Withdrawal')."
+        )
+
+
+def _classify_columns(body: pd.DataFrame) -> dict[int, str]:
+    """Tag each column as 'date', 'amount', 'text', or 'empty' from its data.
+
+    Used as a fallback when header tokens don't match (e.g. non-English headers
+    like 'Tarikh' / 'Money Out') so the user-confirmed header row still yields a
+    usable parse."""
+    classes: dict[int, str] = {}
+    for idx in range(body.shape[1]):
+        col = body.iloc[:, idx]
+        non_null = col[col.notna()].astype(str).str.strip()
+        non_null = non_null[non_null.ne("") & non_null.str.lower().ne("nan")]
+        if len(non_null) == 0:
+            classes[idx] = "empty"
+            continue
+        cleaned = non_null.str.replace(",", "", regex=False) \
+            .str.replace("₹", "", regex=False).str.strip().str.strip('"').str.strip()
+        num_ratio = pd.to_numeric(cleaned, errors="coerce").notna().mean()
+        # Suppress noisy dateutil warnings while sniffing
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dt_ratio = pd.to_datetime(non_null, errors="coerce", dayfirst=True).notna().mean()
+        if dt_ratio >= 0.7 and dt_ratio >= num_ratio:
+            classes[idx] = "date"
+        elif num_ratio >= 0.7:
+            classes[idx] = "amount"
+        else:
+            classes[idx] = "text"
+    return classes
+
+
+def _build_preview(raw: pd.DataFrame, limit: int = 15) -> list[dict]:
+    preview = []
+    for i in range(min(limit, len(raw))):
+        cells = [str(v) for v in raw.iloc[i].tolist() if str(v).strip() and str(v) != "nan"]
+        if cells:
+            preview.append({"index": i, "text": " | ".join(cells)[:200]})
+    return preview
+
+
+def _parse_from_df(
+    raw: pd.DataFrame,
+    extract_fn,
+    header_row: Optional[int] = None,
+) -> pd.DataFrame:
     """Parse a transaction DataFrame by locating columns from header text.
 
     Used by every bank profile so detection format (xls / xlsx / html) doesn't
-    matter — we only care about header names."""
-    hdr = _find_header_row_any(raw)
-    if hdr is None:
-        preview = []
-        for i in range(min(8, len(raw))):
-            cells = [str(v) for v in raw.iloc[i].tolist() if str(v).strip() and str(v) != "nan"]
-            if cells:
-                preview.append(f"  row {i}: {' | '.join(cells)[:160]}")
-        sample = "\n".join(preview) if preview else "  (no readable rows)"
-        raise RuntimeError(
-            "Couldn't locate transaction header row. "
-            "Expected a row containing a date column (e.g. 'Date', 'Txn Date') "
-            "and an amount column (e.g. 'Debit', 'Credit', 'Withdrawal'). "
-            f"First rows seen:\n{sample}"
-        )
+    matter — we only care about header names. Pass ``header_row`` to skip
+    auto-detection and use that row index as the header."""
+    if header_row is not None:
+        if header_row < 0 or header_row >= len(raw):
+            raise RuntimeError(
+                f"Header row {header_row} is out of range (file has {len(raw)} rows)."
+            )
+        hdr = header_row
+    else:
+        hdr = _find_header_row_any(raw)
+        if hdr is None:
+            raise HeaderNotFoundError(_build_preview(raw))
     header = [str(v).lower().strip() for v in raw.iloc[hdr].tolist()]
+    body = raw.iloc[hdr + 1:]
 
     col_date = _pick_col(header, _DATE_TOKENS)
     col_wd = _pick_col(header, _DEBIT_TOKENS)
@@ -337,10 +395,55 @@ def _parse_from_df(raw: pd.DataFrame, extract_fn) -> pd.DataFrame:
     col_dep = _pick_col(header, _CREDIT_TOKENS, avoid={col_wd} if col_wd is not None else None)
     col_bal = _pick_col(header, _BALANCE_TOKENS)
     col_rem = _pick_col(header, _REMARKS_TOKENS)
+
+    # Data-based inference for whatever the header tokens didn't resolve.
+    # Lets the parser handle non-English / non-standard headers (e.g. 'Money Out',
+    # 'Tarikh') once the user has confirmed the header row.
+    classified = _classify_columns(body)
+    used = {c for c in (col_date, col_wd, col_dep, col_bal, col_rem) if c is not None}
+
+    if col_date is None:
+        for idx, kind in classified.items():
+            if idx not in used and kind == "date":
+                col_date = idx
+                used.add(idx)
+                break
+
+    if col_wd is None or col_dep is None:
+        amount_cols = [idx for idx, kind in classified.items()
+                       if idx not in used and kind == "amount"]
+        # Header text hints — even if not exact matches — disambiguate debit vs credit
+        debit_hints = ("out", "debit", "dr", "withdraw", "paid", "spent")
+        credit_hints = ("in", "credit", "cr", "deposit", "received", "in ", "earned")
+
+        def _hint_side(idx):
+            h = header[idx] if idx < len(header) else ""
+            if any(t in h for t in debit_hints):
+                return "wd"
+            if any(t in h for t in credit_hints):
+                return "dep"
+            return None
+
+        unassigned = []
+        for idx in amount_cols:
+            side = _hint_side(idx)
+            if side == "wd" and col_wd is None:
+                col_wd = idx
+            elif side == "dep" and col_dep is None:
+                col_dep = idx
+            else:
+                unassigned.append(idx)
+
+        # Fall back to column order convention: debit before credit
+        for idx in unassigned:
+            if col_wd is None:
+                col_wd = idx
+            elif col_dep is None:
+                col_dep = idx
+        used = {c for c in (col_date, col_wd, col_dep, col_bal, col_rem) if c is not None}
+
     if col_rem is None:
-        # Fallback: pick the widest text column that isn't date/amount/balance.
-        used = {c for c in (col_date, col_wd, col_dep, col_bal) if c is not None}
-        body = raw.iloc[hdr + 1:]
+        # Widest text column that isn't date/amount/balance.
         best_idx, best_width = None, 0
         for idx in range(body.shape[1]):
             if idx in used:
@@ -406,11 +509,11 @@ class ICICIProfile(Profile):
         return hdr is not None
 
     @classmethod
-    def parse(cls, path):
+    def parse(cls, path, header_row=None):
         _, raw = _load_raw(path)
         if raw is None:
             raise RuntimeError("ICICI: couldn't load file as a table")
-        return _parse_from_df(raw, cls.extract)
+        return _parse_from_df(raw, cls.extract, header_row=header_row)
 
     @classmethod
     def extract(cls, remarks):
@@ -560,11 +663,11 @@ class AxisProfile(Profile):
         return "UTIB" in head_text or "AXIS" in head_text.upper()
 
     @classmethod
-    def parse(cls, path):
+    def parse(cls, path, header_row=None):
         _, raw = _load_raw(path)
         if raw is None:
             raise RuntimeError("Axis: couldn't load file as a table")
-        return _parse_from_df(raw, cls.extract)
+        return _parse_from_df(raw, cls.extract, header_row=header_row)
 
     @classmethod
     def extract(cls, remarks):
@@ -625,11 +728,11 @@ class HDFCProfile(Profile):
         return "HDFC" in head_text.upper()
 
     @classmethod
-    def parse(cls, path):
+    def parse(cls, path, header_row=None):
         _, raw = _load_raw(path)
         if raw is None:
             raise RuntimeError("HDFC: couldn't load file as a table")
-        return _parse_from_df(raw, cls.extract)
+        return _parse_from_df(raw, cls.extract, header_row=header_row)
 
     @classmethod
     def extract(cls, remarks):
@@ -736,12 +839,14 @@ class SBIProfile(Profile):
         return False
 
     @classmethod
-    def parse(cls, path):
+    def parse(cls, path, header_row=None):
         # If the file loads as a table (HTML-wrapped .xls or real .xls/.xlsx),
         # use the shared header-driven parser.
         _, raw_df = _load_raw(path)
-        if raw_df is not None and _find_header_row_any(raw_df) is not None:
-            return _parse_from_df(raw_df, cls.extract)
+        if raw_df is not None and (
+            header_row is not None or _find_header_row_any(raw_df) is not None
+        ):
+            return _parse_from_df(raw_df, cls.extract, header_row=header_row)
 
         # Otherwise fall back to the tab-separated text export.
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -885,17 +990,17 @@ class GenericProfile(Profile):
         return True  # always last in registry
 
     @classmethod
-    def parse(cls, path):
+    def parse(cls, path, header_row=None):
         _, raw = _load_raw(path)
         if raw is not None:
-            return _parse_from_df(raw, cls.extract)
+            return _parse_from_df(raw, cls.extract, header_row=header_row)
         # File didn't load as Excel/HTML — try tab/comma-separated text.
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
         sep = "\t" if text.count("\t") > text.count(",") else ","
         rows = list(csv.reader(io.StringIO(text), delimiter=sep))
         df = pd.DataFrame(rows)
-        return _parse_from_df(df, cls.extract)
+        return _parse_from_df(df, cls.extract, header_row=header_row)
 
     @classmethod
     def extract(cls, remarks):

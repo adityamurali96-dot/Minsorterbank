@@ -73,6 +73,13 @@ def api_sort():
     try:
         bank_choice = (request.form.get("bank") or "auto").strip().lower()
         hanging = (request.form.get("hanging") or "no").strip().lower()
+        header_row_raw = (request.form.get("header_row") or "").strip()
+        header_row = None
+        if header_row_raw:
+            try:
+                header_row = int(header_row_raw)
+            except ValueError:
+                return jsonify({"error": f"Invalid header_row: {header_row_raw!r}"}), 400
 
         parse_path = in_path
         if hanging == "yes":
@@ -85,7 +92,14 @@ def api_sort():
             parse_path = merged_path
 
         profile = _resolve_profile(bank_choice, parse_path)
-        df = profile.parse(parse_path)
+        try:
+            df = profile.parse(parse_path, header_row=header_row)
+        except sort_statement.HeaderNotFoundError as e:
+            return jsonify({
+                "needs_header": True,
+                "error": str(e),
+                "preview": e.preview,
+            }), 422
         extracted = int(df["counterparty"].notna().sum())
 
         buf = io.BytesIO()
