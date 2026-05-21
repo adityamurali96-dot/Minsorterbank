@@ -27,6 +27,15 @@
       <p class="bank-hint">Pick your bank to skip auto-detection and improve parsing accuracy.</p>
     </section>
 
+    <section class="bank-pick">
+      <label for="hangingSelect">Hanging rows (Tabula)</label>
+      <select id="hangingSelect">
+        <option value="no" selected>No</option>
+        <option value="yes">Yes &mdash; merge first</option>
+      </select>
+      <p class="bank-hint">If your file is a Tabula-extracted PDF export with wrapped narration on continuation rows, pick &ldquo;Yes&rdquo; to merge them before sorting.</p>
+    </section>
+
     <section id="drop" class="drop" tabindex="0">
       <input type="file" id="file" hidden
              accept=".xls,.xlsx,.csv,.txt,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />

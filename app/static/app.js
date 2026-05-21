@@ -14,6 +14,7 @@
   const againBtn = document.getElementById("again");
   const errorAgainBtn = document.getElementById("errorAgain");
   const bankSelect = document.getElementById("bankSelect");
+  const hangingSelect = document.getElementById("hangingSelect");
 
   function show(el) { el.classList.remove("hidden"); }
   function hide(el) { el.classList.add("hidden"); }
@@ -74,6 +75,7 @@
     const fd = new FormData();
     fd.append("file", file);
     fd.append("bank", (bankSelect && bankSelect.value) || "auto");
+    fd.append("hanging", (hangingSelect && hangingSelect.value) || "no");
 
     try {
       const res = await fetch("/api/sort", { method: "POST", body: fd });
