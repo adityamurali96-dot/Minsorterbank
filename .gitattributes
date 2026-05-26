@@ -1,0 +1,13 @@
+# Ensure Windows launchers always have CRLF line endings,
+# even when cloned on Mac/Linux or with autocrlf=false.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Unix/macOS launcher must have LF.
+*.command text eol=lf
+
+# Python / web sources use LF everywhere.
+*.py   text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
