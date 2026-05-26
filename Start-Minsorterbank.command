@@ -55,6 +55,15 @@ echo " Using Python: $(command -v python3)"
 python3 --version
 echo
 
+# --- Verify the Python version is at least 3.8.
+if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" 2>/dev/null; then
+  echo " The Python on this Mac is too old for Minsorterbank."
+  echo " Minsorterbank requires Python 3.8 or later."
+  echo " Please download a newer version from https://www.python.org/downloads/"
+  open https://www.python.org/downloads/
+  exit 1
+fi
+
 # --- Step 2: create a private virtual environment on first run.
 if [ ! -x ".venv/bin/python" ]; then
   echo " First-time setup: creating a private Python environment..."

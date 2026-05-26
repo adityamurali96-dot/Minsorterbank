@@ -112,6 +112,17 @@ echo  Using Python: !PY!
 %PY% --version
 echo.
 
+REM --- Verify the Python version is at least 3.8.
+%PY% -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" >nul 2>nul
+if errorlevel 1 (
+  echo  The Python found on this system is too old for Minsorterbank.
+  echo  Minsorterbank requires Python 3.8 or later.
+  echo  Please install a newer version from https://www.python.org/downloads/
+  start "" https://www.python.org/downloads/
+  exit /b 1
+)
+echo.
+
 REM --- Step 2: create a private virtual environment on first run.
 if not exist ".venv\Scripts\python.exe" (
   echo  First-time setup: creating a private Python environment...
@@ -187,10 +198,11 @@ if not defined PY (
   where python >nul 2>nul && set "PY=python"
 )
 if not defined PY (
-  if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set "PY=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
-)
-if not defined PY (
-  if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" set "PY=%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+  for %%V in (313 312 311 310 39 38) do (
+    if not defined PY (
+      if exist "%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe" set "PY=%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe"
+    )
+  )
 )
 goto :eof
 
