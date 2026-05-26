@@ -283,4 +283,24 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.version_info < (3, 8):
+        print(
+            f"\n  Minsorterbank requires Python 3.8 or later."
+            f"\n  You are running Python {sys.version}."
+            f"\n  Please install a newer Python from https://www.python.org/downloads/"
+        )
+        try:
+            input("\n  Press Enter to close...")
+        except EOFError:
+            pass
+        sys.exit(1)
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        print("\n  Minsorterbank hit an unexpected error (see above).")
+        try:
+            input("  Press Enter to close...")
+        except EOFError:
+            pass
+        sys.exit(1)

@@ -16,10 +16,19 @@ Adding a new bank: write a new Profile subclass with detect() + parse_columns()
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 8):
+    print(
+        f"Minsorterbank requires Python 3.8 or later.\n"
+        f"You are running Python {sys.version}.\n"
+        f"Please install a newer Python from https://www.python.org/downloads/"
+    )
+    sys.exit(1)
+
 import csv
 import io
 import re
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
