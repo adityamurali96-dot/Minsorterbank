@@ -92,11 +92,11 @@ if not defined PY (
 )
 
 echo  Using Python: !PY!
-%PY% --version
+call %PY% --version
 echo.
 
 REM --- Verify the Python version is at least 3.8.
-%PY% -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" >nul 2>nul
+call %PY% -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" >nul 2>nul
 if errorlevel 1 (
   echo  The Python found on this system is too old for Minsorterbank.
   echo  Minsorterbank requires Python 3.8 or later.
@@ -108,7 +108,7 @@ if errorlevel 1 (
 REM --- Step 2: create a private virtual environment on first run.
 if not exist ".venv\Scripts\python.exe" (
   echo  First-time setup: creating a private Python environment...
-  %PY% -m venv .venv
+  call %PY% -m venv .venv
   if errorlevel 1 (
     echo.
     echo  Could not create the virtual environment.
@@ -178,7 +178,7 @@ REM ============================================================
 set "PY="
 where py >nul 2>nul && set "PY=py -3"
 if not defined PY (
-  where python >nul 2>nul && set "PY=python"
+  where python >nul 2>nul && for /f "delims=" %%P in ('where python') do if not defined PY set "PY=""%%P"""
 )
 if not defined PY (
   for %%V in (313 312 311 310 39 38) do (
