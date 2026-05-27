@@ -158,6 +158,16 @@
       : 0;
 
     drawTable(preview.rows, nCols);
+
+    let countEl = document.getElementById("previewRowCount");
+    if (!countEl) {
+      countEl = document.createElement("p");
+      countEl.id = "previewRowCount";
+      countEl.className = "preview-row-count";
+      previewTable.parentNode.insertBefore(countEl, previewTable);
+    }
+    countEl.textContent = `${preview.rows.length} rows in file`;
+
     hide(status);
     show(columnMapper);
   }

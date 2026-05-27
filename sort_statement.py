@@ -536,12 +536,14 @@ def parse_with_explicit_columns(
     )
 
 
-def build_preview(raw: pd.DataFrame, row_limit: int = 15) -> dict:
+def build_preview(raw: pd.DataFrame, row_limit: int = 0) -> dict:
     """Return preview rows + auto-detected header/column suggestions.
 
     Used by the ``/api/preview`` endpoint to populate the column-mapping UI.
     Suggestions may be ``None`` when auto-detection can't decide -- the UI
     will just leave those columns as "Ignore" for the user to set.
+
+    ``row_limit=0`` means return all rows (the default).
     """
     if raw is None or raw.shape[1] == 0:
         return {
@@ -554,7 +556,7 @@ def build_preview(raw: pd.DataFrame, row_limit: int = 15) -> dict:
             },
         }
     n_rows, n_cols = raw.shape
-    limit = min(row_limit, n_rows)
+    limit = min(row_limit, n_rows) if row_limit > 0 else n_rows
     rows: list[list[str]] = []
     for i in range(limit):
         row = []
