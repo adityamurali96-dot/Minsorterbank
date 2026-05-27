@@ -477,8 +477,8 @@ def _build_txn_frame(
     out = pd.DataFrame({
         "txn_date": col(col_date),
         "remarks": col(col_remarks),
-        "withdrawal": _numify(col(col_withdrawal)),
-        "deposit": _numify(col(col_deposit)),
+        "withdrawal": _numify(col(col_withdrawal)).abs(),
+        "deposit": _numify(col(col_deposit)).abs(),
         "balance": pd.to_numeric(
             col(col_balance).astype(str).str.replace(",", "", regex=False).str.strip(),
             errors="coerce",
@@ -1040,8 +1040,8 @@ class SBIProfile(Profile):
         df = pd.DataFrame({
             "txn_date": [get(r, col_date) for r in rows],
             "remarks": [get(r, col_rem) for r in rows],
-            "withdrawal": [_to_num(get(r, col_wd)) for r in rows],
-            "deposit": [_to_num(get(r, col_dep)) for r in rows],
+            "withdrawal": [abs(_to_num(get(r, col_wd))) for r in rows],
+            "deposit": [abs(_to_num(get(r, col_dep))) for r in rows],
             "balance": [_to_num(get(r, col_bal)) for r in rows],
         })
         df = df[(df["withdrawal"] > 0) | (df["deposit"] > 0)].reset_index(drop=True)
@@ -1456,7 +1456,15 @@ def _write_sheet(ws, title, df, amount_col, threshold=2):
         row += 1
         first = row
         for _, r in sub.iterrows():
-            ws.cell(row=row, column=1, value=str(r["txn_date"])).font = REG
+            date_val = r["txn_date"]
+            date_cell = ws.cell(row=row, column=1)
+            parsed_date = pd.to_datetime(date_val, errors="coerce", dayfirst=True)
+            if pd.notna(parsed_date):
+                date_cell.value = parsed_date.to_pydatetime()
+                date_cell.number_format = "DD-MM-YYYY"
+            else:
+                date_cell.value = str(date_val) if pd.notna(date_val) else ""
+            date_cell.font = REG
             ws.cell(row=row, column=2, value=r["counterparty"] or "").font = REG
             ws.cell(row=row, column=3, value=str(r["remarks"])).font = REG
             ws.cell(row=row, column=4, value=float(r[amount_col])).font = REG
