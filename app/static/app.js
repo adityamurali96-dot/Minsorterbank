@@ -15,6 +15,7 @@
   const errorAgainBtn = document.getElementById("errorAgain");
   const bankSelect = document.getElementById("bankSelect");
   const hangingSelect = document.getElementById("hangingSelect");
+  const dateMergedSelect = document.getElementById("dateMergedSelect");
   const columnMapper = document.getElementById("columnMapper");
   const previewTable = document.getElementById("previewTable");
   const mapperSort = document.getElementById("mapperSort");
@@ -112,6 +113,7 @@
     const fd = new FormData();
     fd.append("file", file);
     fd.append("bank", (bankSelect && bankSelect.value) || "auto");
+    fd.append("date_merged", (dateMergedSelect && dateMergedSelect.value) || "no");
     fd.append("hanging", (hangingSelect && hangingSelect.value) || "no");
 
     try {
@@ -273,6 +275,7 @@
     const fd = new FormData();
     fd.append("file", lastFile);
     fd.append("bank", (bankSelect && bankSelect.value) || "auto");
+    fd.append("date_merged", (dateMergedSelect && dateMergedSelect.value) || "no");
     fd.append("hanging", (hangingSelect && hangingSelect.value) || "no");
     fd.append("data_start_row", String(dataStartRow));
     fd.append("col_date", String(columnIndexFor("date")));
