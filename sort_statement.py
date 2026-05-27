@@ -2,7 +2,7 @@
 Indian bank statement -> grouped Deposits / Withdrawals workbook.
 
 Architecture:
-  detect_profile(path)  -> Profile (icici | axis | hdfc | sbi | generic)
+  detect_profile(path)  -> Profile (icici | axis | hdfc | sbi | kotak | generic)
   Profile.parse(path)   -> DataFrame[txn_date, remarks, withdrawal, deposit, balance, counterparty]
   consolidate(...)      -> merge near-duplicate counterparties
   write_workbook(...)   -> 2-sheet xlsx grouped by counterparty, threshold >=2
@@ -1108,6 +1108,252 @@ class SBIProfile(Profile):
         return _apply_alias(extract_generic(r)) if extract_generic(r) else None
 
 
+# ---------- Kotak ----------
+
+def _kotak_extract(remarks: str) -> Optional[str]:
+    r = str(remarks).strip()
+    if not r:
+        return None
+    up = r.upper()
+
+    rev = up.startswith("REV-") or up.startswith("REV ")
+    if rev:
+        inner = re.sub(r"^REV[-\s]+", "", r, flags=re.IGNORECASE)
+        base = _kotak_extract(inner)
+        return f"{base} (REVERSAL)" if base else "REVERSAL"
+
+    if up.startswith("UPI/"):
+        parts = [p.strip() for p in r.split("/")]
+        if len(parts) >= 2:
+            name = parts[1]
+            if "@" in name:
+                cleaned = _clean_vpa(name)
+                if cleaned and cleaned not in _GATEWAY_VPA:
+                    return _apply_alias(cleaned)
+            idx = 2
+            while (len(re.sub(r"[^A-Za-z]", "", name)) < 3
+                   and idx < len(parts)
+                   and not re.match(r"^\d{6,}", parts[idx])):
+                name = f"{name}/{parts[idx]}"
+                idx += 1
+            n = _norm(name)
+            if n and n not in _GENERIC_NOTES and len(n) >= 2:
+                return _apply_alias(n)
+        return None
+
+    m = re.match(r"^(?:RECD|REED|RECVD)\s*:?\s*IMPS/", up)
+    if m:
+        parts = [p.strip() for p in r.split("/")]
+        for p in parts[2:]:
+            if p and not p.isdigit() and "@" not in p:
+                n = _norm(p)
+                if n and n not in _GENERIC_NOTES and len(n) >= 2:
+                    return _apply_alias(n)
+        return None
+
+    if up.startswith("SENTIMPS"):
+        body = re.sub(r"^SentIMPS", "", r, flags=re.IGNORECASE)
+        body = re.sub(r"^\d+", "", body)
+        head = body.split("/")[0]
+        n = _norm(head)
+        if n and n not in _GENERIC_NOTES and len(n) >= 2:
+            return _apply_alias(n)
+        slots = [s.strip() for s in body.split("/") if s.strip()]
+        if slots:
+            tail = _norm(slots[-1])
+            if tail and tail not in _GENERIC_NOTES and len(tail) >= 3:
+                return f"IMPS - {tail}"
+        return "IMPS TRANSFER"
+
+    m = re.match(r"^MB\s*:?\s*SENT\s+TO\s+(.+)$", r, flags=re.IGNORECASE)
+    if m:
+        name = re.split(r"[/]", m.group(1))[0]
+        name = re.sub(r"\bTOTAL\b.*$", "", name, flags=re.IGNORECASE)
+        n = _norm(name)
+        if n and n not in _GENERIC_NOTES:
+            return _apply_alias(n)
+        return None
+
+    m = re.match(r"^MB\s*:?\s*RECEIVED\s+MONEY\s+FROM\s+(.+)$", r, flags=re.IGNORECASE)
+    if m:
+        rest = m.group(1).strip()
+        if rest.upper().startswith("OWN"):
+            return "SELF TRANSFER"
+        n = _norm(re.split(r"[/]", rest)[0])
+        return _apply_alias(n) if n else "SELF TRANSFER"
+
+    m = re.match(r"^(?:MB|AP|IB)\s*:?\s*BILLPAY\s+(?:FOR\s+)?([A-Za-z][A-Za-z &]+?)\s*\d", r, flags=re.IGNORECASE)
+    if m:
+        return _apply_alias(_norm(m.group(1)))
+
+    m = re.match(r"^PG\s+\d+\s+([A-Za-z]+)\b", r)
+    if m:
+        return _apply_alias(_norm(m.group(1)))
+
+    if up.startswith("NEFT"):
+        body = re.sub(r"^NEFT[-/ ]*", "", r, flags=re.IGNORECASE)
+        toks = body.split()
+        if toks and any(c.isdigit() for c in toks[0]):
+            toks = toks[1:]
+        name = " ".join(toks[:4])
+        n = _norm(name)
+        if n and n not in _GENERIC_NOTES and len(n) >= 3:
+            return _apply_alias(n)
+        return None
+
+    m = re.match(r"^IFT[-\s]+([^-]+?)-", r, flags=re.IGNORECASE)
+    if m:
+        return _apply_alias(_norm(m.group(1)))
+
+    m = re.match(r"^FUNDS\s+TRANSFER\s+(?:FROM|TO)\s+(.+)$", r, flags=re.IGNORECASE)
+    if m:
+        return _apply_alias(_norm(re.split(r"[/]", m.group(1))[0]))
+
+    m = re.match(r"^CLG\s+TO\s+(.+)$", r, flags=re.IGNORECASE)
+    if m:
+        return _apply_alias(_norm(m.group(1)))
+
+    if re.match(r"^(?:NB|IB|N\d+|\d+)\s*:", up) or up.startswith("FROM CASA") or up.startswith("FROM ACCT"):
+        if "RD" in up or "CASA" in up or "ACCT" in up or "TRANSFER" in up or "TO KR" in up or "TO RD" in up:
+            return "SELF TRANSFER"
+
+    if up.startswith("RD MATURITY") or up.startswith("RD "):
+        return "RD (Recurring Deposit)"
+    if up.startswith("FD "):
+        return "FD (Fixed Deposit)"
+
+    if "ETAX" in up or up.startswith("IB: ETAX"):
+        return "ETAX (Income Tax)"
+
+    if up.startswith("CASH WITHDRAWAL") or up.startswith("ATM") or "CASH WDL" in up:
+        return "CASH WITHDRAWAL"
+
+    if up.startswith("INT.PD") or "INT.PD:" in up:
+        return "SB INTEREST"
+
+    return _apply_alias(extract_generic(r)) if extract_generic(r) else None
+
+
+class KotakProfile(Profile):
+    name = "kotak"
+
+    @classmethod
+    def detect(cls, path, raw_text, raw_df):
+        text_up = (raw_text or "").upper()
+        if "KOTAK" in text_up or "KKBK" in text_up:
+            return True
+        if raw_df is None:
+            return False
+        for i in range(min(30, len(raw_df))):
+            row = [str(v).strip().lower() for v in raw_df.iloc[i].tolist()]
+            if ("particulars" in row and "balance" in row
+                    and ("dr" in row and "cr" in row) and "id" in row):
+                return True
+        return False
+
+    @classmethod
+    def parse(cls, path, header_row=None):
+        _, raw = _load_raw(path)
+        if raw is None:
+            raise RuntimeError("Kotak: couldn't load file as a table")
+        return _parse_kotak(raw, cls.extract, header_row=header_row)
+
+    @classmethod
+    def extract(cls, remarks):
+        return _kotak_extract(remarks)
+
+
+def _find_kotak_header(raw: pd.DataFrame) -> Optional[int]:
+    for i in range(min(40, len(raw))):
+        row = [str(v).strip().lower() for v in raw.iloc[i].tolist()]
+        if "particulars" in row and "balance" in row and "dr" in row and "cr" in row:
+            return i
+    return None
+
+
+def _parse_kotak(raw: pd.DataFrame, extract_fn, header_row: Optional[int] = None) -> pd.DataFrame:
+    """Kotak statements wrap one logical transaction across TWO physical rows:
+       row 1: date | particulars(part 1) | ID | DR | CR | Balance
+       row 2: time | particulars(part 2) |    |    |    |
+    We locate columns from the header, then merge each start row with the
+    continuation row(s) until the next row that carries a DR/CR amount."""
+    hdr = header_row if header_row is not None else _find_kotak_header(raw)
+    if hdr is None:
+        raise RuntimeError("Kotak: couldn't locate header row (Date/Particulars/DR/CR/Balance)")
+
+    header = [str(v).strip().lower() for v in raw.iloc[hdr].tolist()]
+
+    def col_of(*names):
+        for idx, h in enumerate(header):
+            if h in names:
+                return idx
+        return None
+
+    c_date = col_of("date")
+    c_part = col_of("particulars", "narration", "description")
+    c_dr = col_of("dr", "debit", "withdrawal")
+    c_cr = col_of("cr", "credit", "deposit")
+    c_bal = col_of("balance")
+
+    if c_part is None or c_dr is None or c_cr is None:
+        raise RuntimeError("Kotak: required columns (Particulars/DR/CR) not found in header")
+
+    body = raw.iloc[hdr + 1:].reset_index(drop=True)
+
+    def has_amt(i):
+        for c in (c_dr, c_cr):
+            v = body.iloc[i, c]
+            if pd.notna(v) and str(v).strip() not in ("", "nan"):
+                return True
+        return False
+
+    def cell(i, c):
+        if c is None:
+            return ""
+        v = body.iloc[i, c]
+        return "" if pd.isna(v) else str(v).strip()
+
+    records = []
+    n = len(body)
+    i = 0
+    while i < n and not has_amt(i):
+        i += 1
+    while i < n:
+        start = i
+        j = i + 1
+        while j < n and not has_amt(j):
+            j += 1
+        part = "".join(cell(k, c_part) for k in range(start, j))
+        date = cell(start, c_date)
+        dr_raw = cell(start, c_dr)
+        cr_raw = cell(start, c_cr)
+        bal_raw = cell(start, c_bal)
+        records.append({
+            "txn_date": date,
+            "remarks": part,
+            "_dr": dr_raw,
+            "_cr": cr_raw,
+            "_bal": bal_raw,
+        })
+        i = j
+
+    df = pd.DataFrame.from_records(records)
+    if df.empty:
+        return pd.DataFrame(columns=["txn_date", "remarks", "withdrawal",
+                                     "deposit", "balance", "counterparty"])
+
+    df["withdrawal"] = _numify(df["_dr"]).abs()
+    df["deposit"] = _numify(df["_cr"]).abs()
+    df["balance"] = pd.to_numeric(
+        df["_bal"].astype(str).str.replace(",", "", regex=False).str.strip(),
+        errors="coerce",
+    )
+    df = df.drop(columns=["_dr", "_cr", "_bal"])
+    df = df[(df["withdrawal"] > 0) | (df["deposit"] > 0)].reset_index(drop=True)
+    df["counterparty"] = df["remarks"].map(extract_fn)
+    return df
+
+
 # ---------- Generic fallback ----------
 
 class GenericProfile(Profile):
@@ -1137,7 +1383,7 @@ class GenericProfile(Profile):
 
 
 # Order matters: more-specific profiles first; Generic always last.
-PROFILES = [HDFCProfile, AxisProfile, SBIProfile, ICICIProfile, GenericProfile]
+PROFILES = [HDFCProfile, AxisProfile, SBIProfile, ICICIProfile, KotakProfile, GenericProfile]
 
 
 def detect_profile(path: Path) -> type[Profile]:
