@@ -32,6 +32,7 @@ sys.path.insert(0, str(BASE))
 
 import sort_statement  # noqa: E402
 import merge_tabula  # noqa: E402
+import tabula_date_split  # noqa: E402
 
 
 app = Flask(
@@ -60,6 +61,16 @@ def _save_upload(file_storage):
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         file_storage.save(tmp.name)
         return Path(tmp.name), suffix
+
+
+def _apply_date_split(in_path: Path, suffix: str):
+    """Split merged date+narration cells in a Tabula export. Returns the path
+    to parse from, plus a path to clean up (or None)."""
+    if suffix.lower() != ".xlsx":
+        raise ValueError("Date-narration split requires an .xlsx file.")
+    split_path = in_path.with_suffix(".datesplit.xlsx")
+    tabula_date_split.clean_statement(str(in_path), out_path=str(split_path))
+    return split_path, split_path
 
 
 def _apply_hanging_merge(in_path: Path, suffix: str):
@@ -100,15 +111,22 @@ def api_preview():
         return jsonify({"error": "Empty filename."}), 400
 
     in_path, suffix = _save_upload(f)
+    date_split_path = None
     merged_path = None
     try:
+        date_merged = (request.form.get("date_merged") or "no").strip().lower()
         hanging = (request.form.get("hanging") or "no").strip().lower()
         bank_choice = (request.form.get("bank") or "auto").strip().lower()
 
         parse_path = in_path
+        if date_merged == "yes":
+            try:
+                parse_path, date_split_path = _apply_date_split(parse_path, suffix)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
         if hanging == "yes":
             try:
-                parse_path, merged_path = _apply_hanging_merge(in_path, suffix)
+                parse_path, merged_path = _apply_hanging_merge(parse_path, parse_path.suffix)
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
 
@@ -128,7 +146,7 @@ def api_preview():
         traceback.print_exc()
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
     finally:
-        for p in (in_path, merged_path):
+        for p in (in_path, date_split_path, merged_path):
             if p is None:
                 continue
             try:
@@ -147,9 +165,11 @@ def api_sort():
 
     in_path, suffix = _save_upload(f)
 
+    date_split_path = None
     merged_path = None
     try:
         bank_choice = (request.form.get("bank") or "auto").strip().lower()
+        date_merged = (request.form.get("date_merged") or "no").strip().lower()
         hanging = (request.form.get("hanging") or "no").strip().lower()
 
         try:
@@ -176,9 +196,14 @@ def api_sort():
                 return jsonify({"error": str(e)}), 400
 
         parse_path = in_path
+        if date_merged == "yes":
+            try:
+                parse_path, date_split_path = _apply_date_split(parse_path, suffix)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
         if hanging == "yes":
             try:
-                parse_path, merged_path = _apply_hanging_merge(in_path, suffix)
+                parse_path, merged_path = _apply_hanging_merge(parse_path, parse_path.suffix)
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
 
@@ -245,13 +270,11 @@ def api_sort():
         traceback.print_exc()
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
     finally:
-        try:
-            in_path.unlink()
-        except OSError:
-            pass
-        if merged_path is not None:
+        for p in (in_path, date_split_path, merged_path):
+            if p is None:
+                continue
             try:
-                merged_path.unlink()
+                p.unlink()
             except OSError:
                 pass
 

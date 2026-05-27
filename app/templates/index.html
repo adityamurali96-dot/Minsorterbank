@@ -28,6 +28,15 @@
     </section>
 
     <section class="bank-pick">
+      <label for="dateMergedSelect">Date &amp; Narration merged (Tabula)</label>
+      <select id="dateMergedSelect">
+        <option value="no" selected>No</option>
+        <option value="yes">Yes &mdash; split first</option>
+      </select>
+      <p class="bank-hint">If Tabula collapsed the Date into the Narration cell (e.g. &ldquo;04/04/25 UPI-ZERODHA&hellip;&rdquo; in column&nbsp;A), pick &ldquo;Yes&rdquo; to split them apart before sorting. Requires .xlsx.</p>
+    </section>
+
+    <section class="bank-pick">
       <label for="hangingSelect">Hanging rows (Tabula)</label>
       <select id="hangingSelect">
         <option value="no" selected>No</option>
