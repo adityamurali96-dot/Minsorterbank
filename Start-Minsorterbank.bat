@@ -26,13 +26,38 @@ echo  Using: %PY%
 %PY% --version
 echo.
 
+REM --- Create virtual environment if missing ---
+if not exist ".venv\Scripts\python.exe" (
+    echo  First-time setup: creating a private Python environment...
+    %PY% -m venv .venv
+    if errorlevel 1 (
+        echo.
+        echo  ERROR: Could not create virtual environment.
+        echo  Try reinstalling Python from https://www.python.org/downloads/
+        pause
+        exit /b 1
+    )
+)
+
+set "VENV_PY=.venv\Scripts\python.exe"
+
+REM --- Install dependencies ---
+echo  Checking dependencies...
+"%VENV_PY%" -m pip install -q -r requirements.txt
+if errorlevel 1 (
+    echo.
+    echo  ERROR: Could not install dependencies. Check your internet connection.
+    pause
+    exit /b 1
+)
+
 REM --- Launch the Flask app on localhost ---
 echo  Starting Minsorterbank on localhost...
 echo  Your browser will open automatically.
 echo  Keep this window open while using the app.
 echo  Press Ctrl+C or close this window to quit.
 echo.
-%PY% app\app.py
+"%VENV_PY%" app\app.py
 
 echo.
 if errorlevel 1 (
