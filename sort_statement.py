@@ -1356,6 +1356,110 @@ def _parse_kotak(raw: pd.DataFrame, extract_fn, header_row: Optional[int] = None
     return df
 
 
+# ---------- Canara ----------
+
+def _canara_extract(remarks):
+    """Canara SB narrations.
+
+    UPI:  UPI/<DR|CR>/<ref>/<MERCHANT>/<BANK>/**<masked-vpa>/UPI//<txnid>/<dt>
+          -> masked VPA is unusable, so MERCHANT (slot 3) is the primary signal
+             (Canara truncates it to ~9 chars).
+    INET-IMPS-CR/<NAME>/<bank>/<acc>/<note>/<phone>/<dt>/<ref> -> NAME slot.
+    IB-IMPS-DR//<bank>/**<acc>//<dt>/<ref>                     -> masked -> bucket.
+    NEFT Cr/Dr-<ref>-<IFSC>-<NAME>--/...                       -> NAME slot.
+    IB NEFT Dr <ref> <NAME> <IFSC> <acc> <note>               -> NAME slot.
+    FD/TD/SBINT/GROSS INT/TDS/SMS/ATM                         -> buckets.
+    """
+    r = str(remarks).strip()
+    if not r:
+        return None
+    up = r.upper()
+
+    # --- UPI ---
+    if up.startswith("UPI/"):
+        parts = [p.strip() for p in r.split("/")]
+        if len(parts) >= 4:
+            n = _norm(parts[3])
+            if n and n not in _GENERIC_NOTES and len(n) >= 3:
+                return _apply_alias(n)
+        if len(parts) >= 6:
+            cleaned = _clean_vpa(parts[5])
+            if cleaned and cleaned not in _GATEWAY_VPA:
+                return _apply_alias(cleaned)
+        return None
+
+    # --- INET-IMPS-CR / INET-IMPS-DR ---
+    m = re.match(r"^INET-IMPS-(?:CR|DR)/([^/]+)/", r, re.IGNORECASE)
+    if m:
+        name = _norm(m.group(1))
+        if name and name not in _GENERIC_NOTES and len(name) >= 3:
+            return _apply_alias(name)
+        return "IMPS TRANSFER"
+
+    # --- IB-IMPS-DR//<bank>/**<acc>// (payer/payee masked) ---
+    if up.startswith("IB-IMPS-DR") or up.startswith("IB-IMPS-CR"):
+        return "IMPS TRANSFER"
+    if up.startswith("IMPS SC") or up == "IMPS":
+        return "IMPS CHARGES"
+
+    # --- NEFT Cr/Dr-<ref>-<IFSC>-<NAME>--/... ---
+    m = re.match(r"^NEFT\s+(?:Cr|Dr)-[^-]+-[^-]+-(.+?)(?:--|/|$)", r, re.IGNORECASE)
+    if m:
+        return _apply_alias(_norm(m.group(1)))
+
+    # --- IB NEFT Dr <ref> <NAME...> <IFSC> <acc> <note> ---
+    m = re.match(r"^IB\s+NEFT\s+(?:Dr|Cr)\s+\S+\s+(.+?)\s+[A-Z]{4}0\w+", r, re.IGNORECASE)
+    if m:
+        return _apply_alias(_norm(m.group(1)))
+
+    # --- Fixed / Term deposits ---
+    if up.startswith("FD REDEEM"):
+        return "FD REDEMPTION"
+    if up.startswith("TD INITIAL PAYIN") or up.startswith("FD ") or up.startswith("TD "):
+        return "FD/TD (Deposit)"
+
+    # --- Interest / tax / charges ---
+    if up.startswith("GROSS INT") or up.startswith("SBINT"):
+        return "SB INTEREST"
+    if up.startswith("TDS"):
+        return "TDS"
+    if up.startswith("SMS CHARGES") or up.startswith("SMS"):
+        return "SMS CHARGES"
+
+    # --- ATM ---
+    if up.startswith("ATM CASH") or up.startswith("ATM "):
+        return "ATM CASH WDL"
+
+    return _apply_alias(extract_generic(r)) if extract_generic(r) else None
+
+
+class CanaraProfile(Profile):
+    name = "canara"
+
+    @classmethod
+    def detect(cls, path, raw_text, raw_df):
+        text_up = (raw_text or "").upper()
+        if "CNRB0" in text_up or "CANARA" in text_up:
+            return True
+        if raw_df is None:
+            return False
+        head_text = " ".join(
+            str(v) for v in raw_df.iloc[:25].values.flatten() if v == v
+        ).upper()
+        return "CNRB0" in head_text or "CANARA" in head_text
+
+    @classmethod
+    def parse(cls, path, header_row=None):
+        _, raw = _load_raw(path)
+        if raw is None:
+            raise RuntimeError("Canara: couldn't load file as a table")
+        return _parse_from_df(raw, cls.extract, header_row=header_row)
+
+    @classmethod
+    def extract(cls, remarks):
+        return _canara_extract(remarks)
+
+
 # ---------- Generic fallback ----------
 
 class GenericProfile(Profile):
@@ -1385,7 +1489,7 @@ class GenericProfile(Profile):
 
 
 # Order matters: more-specific profiles first; Generic always last.
-PROFILES = [HDFCProfile, AxisProfile, SBIProfile, ICICIProfile, KotakProfile, GenericProfile]
+PROFILES = [HDFCProfile, AxisProfile, SBIProfile, ICICIProfile, KotakProfile, CanaraProfile, GenericProfile]
 
 
 def detect_profile(path: Path) -> type[Profile]:
