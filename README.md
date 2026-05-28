@@ -1,6 +1,6 @@
 # Minsorterbank
 
-Turn an Indian bank statement (ICICI / Axis / HDFC / SBI / generic Excel / CSV)
+Turn an Indian bank statement (ICICI / Axis / HDFC / SBI / Canara / generic Excel / CSV)
 into a grouped Deposits / Withdrawals workbook.
 
 Runs entirely on your computer &mdash; nothing is uploaded anywhere.
